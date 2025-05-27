@@ -1,6 +1,6 @@
 # DOLFINx GPU solvers
 
-GPU-accelerated solvers for a range of partial differential equations using CUDA and HIP.
+GPU-accelerated solvers built on DOLFINX for a range of partial differential equations using CUDA and HIP.
 
 ## Status
 
