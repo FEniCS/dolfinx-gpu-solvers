@@ -4,7 +4,7 @@
 #
 cmake_minimum_required(VERSION 3.21)
 
-set(PROJECT_NAME demo_poisson)
+set(PROJECT_NAME demo_cudss)
 project(${PROJECT_NAME} LANGUAGES C CXX CUDA)
 
 if(NOT TARGET dolfinx)
@@ -30,6 +30,7 @@ else()
     set(SCALAR_TYPE "--scalar_type=float32")
   endif()
 endif()
+
 add_custom_command(
   OUTPUT poisson.c
   COMMAND ffcx ${CMAKE_CURRENT_SOURCE_DIR}/poisson.py ${SCALAR_TYPE}
