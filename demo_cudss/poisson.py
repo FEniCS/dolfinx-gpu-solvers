@@ -43,5 +43,5 @@ kappa = Constant(mesh)
 # Finally, we define the bilinear and linear forms according to the
 # variational formulation of the equations:
 
-a = kappa * inner(grad(u), grad(v)) * dx
+a = kappa * inner(grad(u), grad(v)) * dx + inner(u, v) * dx
 L = inner(f, v) * dx + inner(g, v) * ds

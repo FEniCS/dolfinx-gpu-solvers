@@ -1,4 +1,5 @@
 
+#include "dolfinx_cudss.h"
 #include "poisson.h"
 #include <basix/finite-element.h>
 #include <cmath>
@@ -9,7 +10,6 @@
 #include <utility>
 #include <vector>
 
-#include <cudss.h>
 #include <thrust/device_vector.h>
 
 using namespace dolfinx;
@@ -113,50 +113,19 @@ int main(int argc, char *argv[]) {
 
     // Solve here A.u = b
 
-    // cuDSS data structures and handle initialization
-    cudssHandle_t handle;
-    cudssConfig_t config;
-    cudssData_t data;
-    cudssMatrix_t A_dss;
-    cudssMatrix_t b_dss;
-    cudssMatrix_t u_dss;
-
-    cudssCreate(&handle);
-    cudssConfigCreate(&config);
-    cudssDataCreate(handle, &data);
-    cudssMatrixCreateCsr(
-        &A_dss, A_device.index_map(0)->size_local(),
-        A_device.index_map(1)->size_local(), A_device.cols().size(),
-        (void *)(A_device.row_ptr().data().get()), NULL,
-        (void *)(A_device.cols().data().get()),
-        (void *)(A_device.values().data().get()), CUDA_R_32I, CUDA_R_64F,
-        CUDSS_MTYPE_GENERAL, CUDSS_MVIEW_FULL, CUDSS_BASE_ZERO);
-
-    std::int64_t nrows = b.index_map()->size_local();
-    cudssMatrixCreateDn(&b_dss, nrows, 1, nrows,
-                        (void *)b_device.array().data().get(), CUDA_R_64F,
-                        CUDSS_LAYOUT_COL_MAJOR);
-    cudssMatrixCreateDn(&u_dss, nrows, 1, nrows,
-                        (void *)u_device.array().data().get(), CUDA_R_64F,
-                        CUDSS_LAYOUT_COL_MAJOR);
-
-    //    cudssAlgType_t reorder_alg = CUDSS_ALG_DEFAULT;
-    //    cudssConfigSet(config, CUDSS_REORDERING_ALGORITHM, &reorder_alg,
-    //                   sizeof(cudssAlgType_t));
+    dolfinx::la::cuda::cudssSolver cudss(A_device, b_device, u_device);
 
     dolfinx::common::Timer tsolve1("Solve CUDSS - analysis");
     //---------------------------------------------------------------------------------
     // Reordering & symbolic factorization
-    cudssExecute(handle, CUDSS_PHASE_ANALYSIS, config, data, A_dss, u_dss,
-                 b_dss);
+    cudss.analyze();
     tsolve1.stop();
     tsolve1.flush();
 
     dolfinx::common::Timer tsolve2("Solve CUDSS - factorisation");
     //---------------------------------------------------------------------------------
     // Numerical factorization
-    cudssExecute(handle, CUDSS_PHASE_FACTORIZATION, config, data, A_dss, u_dss,
-                 b_dss);
+    cudss.factorize();
     tsolve2.stop();
     tsolve2.flush();
 
@@ -164,35 +133,23 @@ int main(int argc, char *argv[]) {
     // Solving the system
     for (int i = 0; i < 100; ++i) {
       dolfinx::common::Timer tsolve3("Solve CUDSS - solve");
-      cudssExecute(handle, CUDSS_PHASE_SOLVE, config, data, A_dss, u_dss,
-                   b_dss);
+      cudss.solve();
+      tsolve3.stop();
+      tsolve3.flush();
+
+      if (i % 10 == 0) {
+        dolfinx::common::Timer tsolve4("Solve CUDSS - copy back to CPU");
+        // Copy back to host
+        thrust::copy(u_device.array().begin(), u_device.array().end(),
+                     u->x()->array().begin());
+        tsolve4.stop();
+        tsolve4.flush();
+
+        // Save solution in VTK format
+        io::VTKFile file(MPI_COMM_WORLD, "u.pvd", "w");
+        file.write<T>({*u}, i);
+      }
     }
-
-    // Update ghost values before output
-    // u->x()->scatter_fwd();
-
-    //  The function `u` will be modified during the call to solve. A
-    //  {cpp:class}`Function` can be saved to a file. Here, we output
-    //  the solution to a `VTK` file (specified using the suffix `.pvd`)
-    //  for visualisation in an external program such as Paraview.
-
-    dolfinx::common::Timer tsolve4("Solve CUDSS - copy back to CPU");
-    // Copy back to host
-    thrust::copy(u_device.array().begin(), u_device.array().end(),
-                 u->x()->array().begin());
-    tsolve4.stop();
-    tsolve4.flush();
-
-    // Save solution in VTK format
-    io::VTKFile file(MPI_COMM_WORLD, "u.pvd", "w");
-    file.write<T>({*u}, 0);
-
-    cudssConfigDestroy(config);
-    cudssDataDestroy(handle, data);
-    cudssMatrixDestroy(A_dss);
-    cudssMatrixDestroy(u_dss);
-    cudssMatrixDestroy(b_dss);
-    cudssDestroy(handle);
 
     dolfinx::list_timings(MPI_COMM_WORLD);
   }
