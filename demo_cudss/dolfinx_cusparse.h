@@ -15,10 +15,10 @@
 namespace dolfinx::la::cuda
 {
 
-/// cuDSS provides a direct sparse solver for CUDA
-/// solving the problem A.u = b
-/// @tparam MatType A Matrix type stored on-device
-/// @tparam VecType A Vector type stored on-device
+/// cusparse provides a sparse MatVec for CUDA
+/// providing the operator  y = Ax
+/// @tparam MatType Matrix type stored on-device
+/// @tparam VecType Vector type stored on-device
 template <typename MatType, typename VecType>
 class cusparseMatVec
 {
