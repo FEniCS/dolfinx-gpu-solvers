@@ -81,8 +81,8 @@ cusparseMatVec<MatType, VecType>::cusparseMatVec(MatType& A_device,
   assert(A_device.values().size() == A_device.cols().size());
   int nrows = A_device.row_ptr().size() - 1;
 
-  // TODO: non-square matrix
-  int ncols = nrows;
+  assert(nrows == y_device.array().size());
+  int ncols = x_device.array().size();
 
   cusparseStatus_t status = cusparseCreateCsr(
       &matA, nrows, ncols, nnz, (void*)A_device.row_ptr().data().get(),
