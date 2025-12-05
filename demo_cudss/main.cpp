@@ -1,10 +1,12 @@
 
 #include "dolfinx_cudss.h"
+#include "dolfinx_cusparse.h"
 #include "poisson.h"
 #include <basix/finite-element.h>
 #include <cmath>
 #include <dolfinx.h>
 #include <dolfinx/fem/Constant.h>
+#include <dolfinx/io/XDMFFile.h>
 #include <dolfinx/la/MatrixCSR.h>
 #include <dolfinx/la/Vector.h>
 #include <utility>
@@ -16,7 +18,8 @@ using namespace dolfinx;
 using T = PetscScalar;
 using U = typename dolfinx::scalar_value_t<T>;
 
-int main(int argc, char *argv[]) {
+int main(int argc, char* argv[])
+{
   MPI_Init(&argc, &argv);
   dolfinx::init_logging(argc, argv);
 
@@ -32,42 +35,47 @@ int main(int argc, char *argv[]) {
         basix::element::lagrange_variant::unset,
         basix::element::dpc_variant::unset, false);
 
-    auto V =
-        std::make_shared<fem::FunctionSpace<U>>(fem::create_functionspace<U>(
+    auto V
+        = std::make_shared<fem::FunctionSpace<U>>(fem::create_functionspace<U>(
             mesh, std::make_shared<fem::FiniteElement<U>>(element)));
 
     // Prepare and set Constants for the bilinear form
-    auto kappa = std::make_shared<fem::Constant<T>>(2.0);
-    auto f = std::make_shared<fem::Function<T>>(V);
-    auto g = std::make_shared<fem::Function<T>>(V);
+    auto kappa = std::make_shared<fem::Constant<T>>(0.005);
+    auto u = std::make_shared<fem::Function<T>>(V);
 
     // Define variational forms
     fem::Form<T> a = fem::create_form<T>(*form_poisson_a, {V, V}, {},
                                          {{"kappa", kappa}}, {}, {});
-    fem::Form<T> L = fem::create_form<T>(*form_poisson_L, {V},
-                                         {{"f", f}, {"g", g}}, {}, {}, {});
+    fem::Form<T> L
+        = fem::create_form<T>(*form_poisson_L, {V}, {{"f", u}}, {}, {}, {});
 
     // Define boundary condition
 
-    std::vector facets = mesh::locate_entities_boundary(*mesh, 2, [](auto x) {
-      using U = typename decltype(x)::value_type;
-      constexpr U eps = 1.0e-8;
-      std::vector<std::int8_t> marker(x.extent(1), false);
-      for (std::size_t p = 0; p < x.extent(1); ++p) {
-        auto x0 = x(0, p);
-        if (std::abs(x0) < eps or std::abs(x0 - 2) < eps)
-          marker[p] = true;
-      }
-      return marker;
-    });
+    std::vector facets = mesh::locate_entities_boundary(
+        *mesh, 2,
+        [](auto x)
+        {
+          using U = typename decltype(x)::value_type;
+          constexpr U eps = 1.0e-8;
+          std::vector<std::int8_t> marker(x.extent(1), false);
+          for (std::size_t p = 0; p < x.extent(1); ++p)
+          {
+            auto x0 = x(0, p);
+            if (std::abs(x0) < eps or std::abs(x0 - 1.0) < eps)
+              marker[p] = true;
+          }
+          return marker;
+        });
     std::vector bdofs = fem::locate_dofs_topological(
         *V->mesh()->topology_mutable(), *V->dofmap(), 2, facets);
     fem::DirichletBC<T> bc(0, bdofs, V);
 
-    f->interpolate(
-        [](auto x) -> std::pair<std::vector<T>, std::vector<std::size_t>> {
+    u->interpolate(
+        [](auto x) -> std::pair<std::vector<T>, std::vector<std::size_t>>
+        {
           std::vector<T> f;
-          for (std::size_t p = 0; p < x.extent(1); ++p) {
+          for (std::size_t p = 0; p < x.extent(1); ++p)
+          {
             auto dx = (x(0, p) - 0.5) * (x(0, p) - 0.5);
             auto dy = (x(1, p) - 0.5) * (x(1, p) - 0.5);
             f.push_back(10 * std::exp(-(dx + dy) / 0.02));
@@ -76,21 +84,12 @@ int main(int argc, char *argv[]) {
           return {f, {f.size()}};
         });
 
-    g->interpolate(
-        [](auto x) -> std::pair<std::vector<T>, std::vector<std::size_t>> {
-          std::vector<T> f;
-          for (std::size_t p = 0; p < x.extent(1); ++p)
-            f.push_back(std::sin(5 * x(0, p)));
-          return {f, {f.size()}};
-        });
-
-    auto u = std::make_shared<fem::Function<T>>(V);
     la::SparsityPattern sp = fem::create_sparsity_pattern(a);
     sp.finalize();
-    la::MatrixCSR<T> A(sp);
     la::Vector<T> b(L.function_spaces()[0]->dofmap()->index_map,
                     L.function_spaces()[0]->dofmap()->index_map_bs());
 
+    la::MatrixCSR<T> A(sp);
     fem::assemble_matrix(A.mat_add_values(), a, {bc});
     A.scatter_rev();
     fem::set_diagonal<T>(A.mat_set_values(), *V, {bc});
@@ -101,6 +100,20 @@ int main(int argc, char *argv[]) {
                   thrust::device_vector<std::int32_t>>
         A_device(A);
 
+    // Assemble a mass matrix
+    kappa->value[0] = 0.0;
+    la::MatrixCSR<T> Amass(sp);
+    fem::assemble_matrix(Amass.mat_add_values(), a, {bc});
+    A.scatter_rev();
+    fem::set_diagonal<T>(Amass.mat_set_values(), *V, {bc});
+
+    // Copy matrix to GPU device
+    la::MatrixCSR<T, thrust::device_vector<T>,
+                  thrust::device_vector<std::int32_t>,
+                  thrust::device_vector<std::int32_t>>
+        Amass_device(Amass);
+
+    // Create initial RHS
     std::ranges::fill(b.array(), 0);
     fem::assemble_vector(b.array(), L);
     fem::apply_lifting(b.array(), {a}, {{bc}}, {}, T(1));
@@ -111,9 +124,11 @@ int main(int argc, char *argv[]) {
     la::Vector<T, thrust::device_vector<T>> b_device(b);
     la::Vector<T, thrust::device_vector<T>> u_device(*(u->x()));
 
-    // Solve here A.u = b
-
+    // Create a solver for A.u = b
     dolfinx::la::cuda::cudssSolver cudss(A_device, b_device, u_device);
+
+    // Create an operator for b = Amass.u
+    dolfinx::la::cuda::cusparseMatVec spmv(Amass_device, b_device, u_device);
 
     dolfinx::common::Timer tsolve1("Solve CUDSS - analysis");
     //---------------------------------------------------------------------------------
@@ -131,13 +146,13 @@ int main(int argc, char *argv[]) {
 
     //---------------------------------------------------------------------------------
     // Solving the system
-    for (int i = 0; i < 100; ++i) {
-      dolfinx::common::Timer tsolve3("Solve CUDSS - solve");
-      cudss.solve();
-      tsolve3.stop();
-      tsolve3.flush();
+    io::XDMFFile file(MPI_COMM_WORLD, "u.xdmf", "w");
+    file.write_mesh(*mesh);
 
-      if (i % 10 == 0) {
+    for (int i = 0; i < 101; ++i)
+    {
+      if (i % 5 == 0)
+      {
         dolfinx::common::Timer tsolve4("Solve CUDSS - copy back to CPU");
         // Copy back to host
         thrust::copy(u_device.array().begin(), u_device.array().end(),
@@ -146,9 +161,18 @@ int main(int argc, char *argv[]) {
         tsolve4.flush();
 
         // Save solution in VTK format
-        io::VTKFile file(MPI_COMM_WORLD, "u.pvd", "w");
-        file.write<T>({*u}, i);
+        file.write_function<T>({*u}, static_cast<double>(i));
       }
+
+      dolfinx::common::Timer tsolve3("Solve CUDSS - solve");
+      cudss.solve();
+      tsolve3.stop();
+      tsolve3.flush();
+
+      dolfinx::common::Timer tsolveX("CUsparse SPMV");
+      spmv.apply();
+      tsolveX.stop();
+      tsolveX.flush();
     }
 
     dolfinx::list_timings(MPI_COMM_WORLD);

@@ -47,7 +47,7 @@ set_source_files_properties(main.cpp PROPERTIES LANGUAGE CUDA)
 find_package(cudss)
 
 add_executable(${PROJECT_NAME} main.cpp ${CMAKE_CURRENT_BINARY_DIR}/poisson.c)
-target_link_libraries(${PROJECT_NAME} dolfinx cudss)
+target_link_libraries(${PROJECT_NAME} dolfinx cudss cusparse)
 
 # Set C++20 standard
 set(CMAKE_CXX_EXTENSIONS OFF)
