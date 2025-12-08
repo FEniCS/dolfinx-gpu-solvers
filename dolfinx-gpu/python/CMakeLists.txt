@@ -29,6 +29,13 @@ if(DEFINED ENV{CUDA_ARCH})
   set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -g -march=native -std=c++20 -O3 -DNDEBUG --extended-lambda --expt-relaxed-constexpr -lineinfo")
 endif()
 
+# If HIP is available, the user should set HIP_ARCH environment variable
+if(DEFINED ENV{HIP_ARCH})
+  set(CMAKE_HIP_ARCHITECTURES ${HIP_ARCH})
+  set(CMAKE_HIP_STANDARD 20)
+  enable_language(HIP)
+endif()
+
 find_package(DOLFINX REQUIRED CONFIG)
 
 if(DOLFINX_FOUND)
@@ -59,6 +66,10 @@ if(DEFINED ENV{CUDA_ARCH})
   # CUDA direct solver
   find_package(cudss)
   target_link_libraries(gpucpp PRIVATE cudss)
+endif()
+
+if(DEFINED ENV{HIP_ARCH})
+  set_source_files_properties(wrappers/gpu.cu PROPERTIES LANGUAGE HIP)
   target_link_libraries(gpucpp PRIVATE dolfinx)
 endif()
 

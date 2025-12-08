@@ -7,6 +7,7 @@
 #include <cassert>
 #include <complex>
 #include <cstdint>
+
 #include <cusparse.h>
 
 /// Interfaces to CUDA library functions

@@ -7,17 +7,25 @@
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
 
+namespace nb = nanobind;
+using namespace nb::literals;
+
+#ifdef __CUDACC__
 #include "../../cpp/include/gpu_cudss.h"
 #include "../../cpp/include/gpu_cusparse.h"
+using nb_device = nb::device::cuda;
+#endif
+
+#ifdef __HIPCC__
+#include "../../cpp/include/gpu_hipsparse.h"
+using nb_device = nb::device::rocm;
+#endif
 
 #include <dolfinx/la/MatrixCSR.h>
 #include <dolfinx/la/Vector.h>
 #include <thrust/device_vector.h>
 
 #include <dolfinx_wrappers/numpy_dtype.h>
-
-namespace nb = nanobind;
-using namespace nb::literals;
 
 template <typename T>
 void declare_objects(nb::module_& m, const std::string& type)
@@ -38,7 +46,7 @@ void declare_objects(nb::module_& m, const std::string& type)
           "array",
           [](GPUVector& self)
           {
-            return nb::ndarray<T, nb::cupy, nb::device::cuda>(
+            return nb::ndarray<T, nb::cupy, nb_device>(
                 self.array().data().get(), {self.array().size()});
           },
           nb::rv_policy::reference_internal);
@@ -59,7 +67,7 @@ void declare_objects(nb::module_& m, const std::string& type)
           "data",
           [](GPUMatrixCSR& self)
           {
-            return nb::ndarray<T, nb::cupy, nb::device::cuda>(
+            return nb::ndarray<T, nb::cupy, nb_device>(
                 self.values().data().get(), {self.values().size()});
           },
           nb::rv_policy::reference_internal)
@@ -67,7 +75,7 @@ void declare_objects(nb::module_& m, const std::string& type)
           "indices",
           [](GPUMatrixCSR& self)
           {
-            return nb::ndarray<const std::int32_t, nb::cupy, nb::device::cuda>(
+            return nb::ndarray<const std::int32_t, nb::cupy, nb_device>(
                 self.cols().data().get(), {self.cols().size()});
           },
           nb::rv_policy::reference_internal)
@@ -75,12 +83,13 @@ void declare_objects(nb::module_& m, const std::string& type)
           "indptr",
           [](GPUMatrixCSR& self)
           {
-            return nb::ndarray<const std::int32_t, nb::cupy, nb::device::cuda>(
+            return nb::ndarray<const std::int32_t, nb::cupy, nb_device>(
                 self.row_ptr().data().get(), {self.row_ptr().size()});
           },
           nb::rv_policy::reference_internal);
 
   // Solver for Au=b - relying on cuDSS
+#ifdef __CUDACC__
   using GPUSolver = dolfinx::la::cuda::cudssSolver<GPUMatrixCSR, GPUVector>;
   std::string pyclass_solver_name = std::string("GPU_Solver_") + type;
   nb::class_<GPUSolver>(m, pyclass_solver_name.c_str())
@@ -89,9 +98,15 @@ void declare_objects(nb::module_& m, const std::string& type)
       .def("analyze", &GPUSolver::analyze)
       .def("factorize", &GPUSolver::factorize)
       .def("solve", &GPUSolver::solve);
+#endif
 
   // Operator for y=Ax
+#ifdef __CUDACC__
   using GPUSpmv = dolfinx::la::cuda::cusparseMatVec<GPUMatrixCSR, GPUVector>;
+#endif
+#ifdef __HIPCC__
+  using GPUSpmv = dolfinx::la::hip::hipsparseMatVec<GPUMatrixCSR, GPUVector>;
+#endif
   std::string pyclass_spmv_name = std::string("GPU_SPMV_") + type;
   nb::class_<GPUSpmv>(m, pyclass_spmv_name.c_str())
       .def(nb::init<GPUMatrixCSR&, GPUVector&, GPUVector&>(), nb::arg("A"),
@@ -99,11 +114,17 @@ void declare_objects(nb::module_& m, const std::string& type)
       .def("apply", &GPUSpmv::apply);
 }
 
-
 NB_MODULE(gpucpp, m)
 {
   m.doc() = "DOLFINx Python interface (GPU)";
   m.attr("__version__") = "0.1.0";
+
+#ifdef __CUDACC__
+  m.attr("backend") = "cuda";
+#endif
+#ifdef __HIPCC__
+  m.attr("backend") = "hip";
+#endif
 
 #ifdef NDEBUG
   nanobind::set_leak_warnings(false);

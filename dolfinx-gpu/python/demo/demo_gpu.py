@@ -65,20 +65,24 @@ from cupyx.scipy.sparse.linalg import spsolve
 B2 = dolfinx.common.Timer("Create CSR matrix (cupy)")
 Ac = csr_matrix((A1.data, A1.indices, A1.indptr))
 del(B2)
-B3 = dolfinx.common.Timer("Solve using cupyx.scpiy.sparse.linalg.spsolve")
-u = spsolve(Ac, b1.array)
-del(B3)
 
-B4 = dolfinx.common.Timer("CUDSS: Setup")
-solver = GPUSolver(A1, b1, u1)
-spmv = GPUSPMV(A1, b1, u1)
-solver.analyze()
-solver.factorize()
-del(B4)
-B5 = dolfinx.common.Timer("CUDSS: Solve")
-solver.solve()
-del(B5)
+spmv = GPUSPMV(A1, u1, b1)
+spmv.apply()
 
-print(u)
+
+if gpucpp.backend == 'cuda':
+    B3 = dolfinx.common.Timer("Solve using cupyx.scpiy.sparse.linalg.spsolve")
+    u = spsolve(Ac, b1.array)
+    del(B3)
+    B4 = dolfinx.common.Timer("CUDSS: Setup")
+    solver = GPUSolver(A1, b1, u1)
+    solver.analyze()
+    solver.factorize()
+    del(B4)
+    B5 = dolfinx.common.Timer("CUDSS: Solve")
+    solver.solve()
+    del(B5)
+
+print(u1.array)
 
 dolfinx.common.list_timings(MPI.COMM_WORLD)

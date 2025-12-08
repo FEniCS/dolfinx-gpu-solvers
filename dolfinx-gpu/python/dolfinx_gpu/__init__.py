@@ -87,3 +87,6 @@ class GPUSolver:
 class GPUSPMV:
     def __init__(self, A, b, u):
         self._cpp_object = _map_type("SPMV", A._cpp_object.dtype)(A._cpp_object, b._cpp_object, u._cpp_object)
+
+    def apply(self):
+        self._cpp_object.apply()
