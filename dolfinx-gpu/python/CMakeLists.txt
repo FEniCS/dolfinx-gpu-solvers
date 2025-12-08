@@ -66,6 +66,7 @@ if(DEFINED ENV{CUDA_ARCH})
   # CUDA direct solver
   find_package(cudss)
   target_link_libraries(gpucpp PRIVATE cudss)
+  target_link_libraries(gpucpp PRIVATE dolfinx)
 endif()
 
 if(DEFINED ENV{HIP_ARCH})
