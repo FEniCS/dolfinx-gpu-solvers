@@ -1,4 +1,8 @@
-
+// Copyright (C) 2025 Chris Richardson
+//
+// This file is part of DOLFINx (https://www.fenicsproject.org)
+//
+// SPDX-License-Identifier:    MIT
 
 #include "heat.h"
 #include <basix/finite-element.h>
