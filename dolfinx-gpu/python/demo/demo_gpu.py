@@ -1,3 +1,9 @@
+# Copyright (C) 2025 Chris Richardson
+#
+# This file is part of DOLFINx (https://www.fenicsproject.org)
+#
+# SPDX-License-Identifier:    MIT
+
 from mpi4py import MPI
 import dolfinx
 from dolfinx.mesh import CellType, locate_entities_boundary

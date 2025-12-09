@@ -1,3 +1,9 @@
+# Copyright (C) 2025 Chris Richardson
+#
+# This file is part of DOLFINx (https://www.fenicsproject.org)
+#
+# SPDX-License-Identifier:    MIT
+
 import numpy as np
 import numpy.typing as npt
 

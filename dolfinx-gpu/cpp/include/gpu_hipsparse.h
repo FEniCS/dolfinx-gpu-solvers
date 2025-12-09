@@ -2,7 +2,7 @@
 //
 // This file is part of DOLFINx (https://www.fenicsproject.org)
 //
-// SPDX-License-Identifier:    LGPL-3.0-or-later
+// SPDX-License-Identifier:    MIT
 
 #include <cassert>
 #include <complex>
@@ -58,8 +58,8 @@ private:
 //-----------------------------------------------------------------------------
 template <typename MatType, typename VecType>
 hipsparseMatVec<MatType, VecType>::hipsparseMatVec(MatType& A_device,
-                                                 VecType& y_device,
-                                                 VecType& x_device)
+                                                   VecType& y_device,
+                                                   VecType& x_device)
 {
   using T = MatType::value_type;
   using U = VecType::value_type;
@@ -94,11 +94,11 @@ hipsparseMatVec<MatType, VecType>::hipsparseMatVec(MatType& A_device,
 
   // Create dense vector X
   status = hipsparseCreateDnVec(&vecX, x_device.array().size(),
-                               x_device.array().data().get(), data_type);
+                                x_device.array().data().get(), data_type);
   assert(status == HIPSPARSE_STATUS_SUCCESS);
   // Create dense vector y
   status = hipsparseCreateDnVec(&vecY, y_device.array().size(),
-                               y_device.array().data().get(), data_type);
+                                y_device.array().data().get(), data_type);
   assert(status == HIPSPARSE_STATUS_SUCCESS);
 
   alpha = 1.0;
@@ -107,8 +107,8 @@ hipsparseMatVec<MatType, VecType>::hipsparseMatVec(MatType& A_device,
   // allocate an external buffer if needed
   std::size_t bufferSize;
   status = hipsparseSpMV_bufferSize(handle, HIPSPARSE_OPERATION_NON_TRANSPOSE,
-                                   &alpha, matA, vecX, &beta, vecY, data_type,
-                                   HIPSPARSE_SPMV_ALG_DEFAULT, &bufferSize);
+                                    &alpha, matA, vecX, &beta, vecY, data_type,
+                                    HIPSPARSE_SPMV_ALG_DEFAULT, &bufferSize);
   assert(status == HIPSPARSE_STATUS_SUCCESS);
 
   hipError_t err = hipMalloc(&dBuffer, bufferSize);
@@ -119,7 +119,7 @@ template <typename MatType, typename VecType>
 void hipsparseMatVec<MatType, VecType>::apply()
 {
   hipsparseSpMV(handle, HIPSPARSE_OPERATION_NON_TRANSPOSE, &alpha, matA, vecX,
-               &beta, vecY, data_type, HIPSPARSE_SPMV_ALG_DEFAULT, dBuffer);
+                &beta, vecY, data_type, HIPSPARSE_SPMV_ALG_DEFAULT, dBuffer);
 }
 //-----------------------------------------------------------------------------
 template <typename MatType, typename VecType>

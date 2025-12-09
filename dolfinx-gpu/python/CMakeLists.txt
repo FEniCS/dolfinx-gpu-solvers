@@ -1,3 +1,9 @@
+# Copyright (C) 2025 Chris Richardson
+#
+# This file is part of DOLFINx (https://www.fenicsproject.org)
+#
+# SPDX-License-Identifier:    MIT
+
 cmake_minimum_required(VERSION 3.21)
 
 project(dolfinx_gpu_nanobind LANGUAGES CXX)
