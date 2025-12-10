@@ -21,9 +21,15 @@ add_custom_command(
   COMMENT "Compile heat.py using FFCx"
 )
 
+if(DEFINED ENV{CUDA_ARCH})
+  set(CMAKE_CUDA_ARCHITECTURES $ENV{CUDA_ARCH})
+  set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -g -march=native -std=c++20 -O3 -DNDEBUG --extended-lambda --expt-relaxed-constexpr -lineinfo")
+  message(STATUS "Set CUDA architecture to $ENV{CUDA_ARCH}")
+else()
+  message(FATAL_ERROR "CUDA_ARCH not set. Please set e.g. export CUDA_ARCH=80")
+endif()
+  
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
-set(CMAKE_CUDA_ARCHITECTURES 89)
-set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -g -march=native -std=c++20 -O3 -DNDEBUG --extended-lambda --expt-relaxed-constexpr -lineinfo")
 
 set_source_files_properties(main.cpp PROPERTIES LANGUAGE CUDA)
 
