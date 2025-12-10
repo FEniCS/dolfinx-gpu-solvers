@@ -28,12 +28,12 @@ if(DEFINED ENV{CUDA_ARCH})
 else()
   message(FATAL_ERROR "CUDA_ARCH not set. Please set e.g. export CUDA_ARCH=80")
 endif()
-  
+
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
 set_source_files_properties(main.cpp PROPERTIES LANGUAGE CUDA)
 
-find_package(cudss)
+find_package(cudss 0.7.0 REQUIRED)
 find_package(CUDAToolkit)
 
 add_executable(${PROJECT_NAME} main.cpp ${CMAKE_CURRENT_BINARY_DIR}/heat.c)
