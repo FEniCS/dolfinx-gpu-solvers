@@ -149,6 +149,9 @@ public:
 
   void set_weights();
 
+  /// Number of quadrature points
+  std::size_t num_qp() { return nq; }
+
   /// Compute the 6 entries of the symmetric geometry tensor
   /// @param[out] G6_q Values at quadrature points
   /// @param[in] cells List of cells to compute on
