@@ -124,6 +124,86 @@ __global__ void geometry_computation_G6(T* G_entity, const T* xgeom,
           * weights[iq] / detJ;
   }
 }
+
+//-----------------------------------------------------------------------------
+template <typename T>
+__global__ void geometry_computation_detJ(T* G_entity, const T* xgeom,
+                                          const std::int32_t* geometry_dofmap,
+                                          const T* dphi, const T* weights,
+                                          const int* entities, int n_entities,
+                                          int nq)
+{
+  // One block per cell
+  int c = blockIdx.x;
+
+  // Limit to cells in list
+  if (c >= n_entities)
+    return;
+
+  // Cell index
+  int cell = entities[c];
+
+  // Number of coordinate dofs
+  constexpr int ncdofs = 4;
+
+  // Geometric dimension
+  constexpr int gdim = 3;
+
+  __shared__ T _coord_dofs[ncdofs * gdim];
+
+  // First collect geometry into shared memory
+  int iq = threadIdx.x;
+  if (iq >= nq)
+    return;
+
+  if (nq < ncdofs)
+  {
+    if (iq == 0)
+      for (int i = 0; i < ncdofs; ++i)
+        for (int j = 0; j < gdim; ++j)
+          _coord_dofs[i * gdim + j]
+              = xgeom[3 * geometry_dofmap[cell * ncdofs + i] + j];
+  }
+  else if (iq < ncdofs)
+  {
+    for (int j = 0; j < 3; ++j)
+      _coord_dofs[iq * 3 + j]
+          = xgeom[3 * geometry_dofmap[cell * ncdofs + iq] + j];
+  }
+  __syncthreads();
+  // One quadrature point per thread
+
+  // Jacobian
+  T J[3][3];
+  auto coord_dofs
+      = [](int i, int j) -> T& { return _coord_dofs[i * gdim + j]; };
+
+  // For each quadrature point / thread
+  {
+    // dphi has shape [gdim, ncdofs]
+    auto _dphi = [&dphi, nq, iq](int i, int j) -> const T
+    { return dphi[(i * nq + iq) * ncdofs + j]; };
+    for (std::size_t i = 0; i < gdim; i++)
+    {
+      for (std::size_t j = 0; j < gdim; j++)
+      {
+        J[i][j] = 0.0;
+        for (std::size_t k = 0; k < ncdofs; k++)
+          J[i][j] += coord_dofs(k, i) * _dphi(j, k);
+      }
+    }
+    // Cofactors of J
+    T K0[3] = {J[1][1] * J[2][2] - J[1][2] * J[2][1],
+               -J[1][0] * J[2][2] + J[1][2] * J[2][0],
+               J[1][0] * J[2][1] - J[1][1] * J[2][0]};
+
+    T detJ = std::abs(J[0][0] * K0[0] + J[0][1] * K0[1] + J[0][2] * K0[2]);
+
+    int offset = (c * nq + iq);
+    G_entity[offset] = detJ * weights[iq];
+  }
+}
+
 } // namespace
 
 template <typename T>

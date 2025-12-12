@@ -57,6 +57,12 @@ int main(int argc, char* argv[])
     for (int i = 0; i < 6 * nq; ++i)
       std::cout << i << ": " << g_cpu[i] << "\n";
 
+    gpu_geom.compute_detJ(G6_data, cells);
+    thrust::copy(G6_data.begin(), G6_data.end(), g_cpu.begin());
+    std::cout << "detJ=\n";
+    for (int i = 0; i < nq; ++i)
+      std::cout << i << ": " << g_cpu[i] << "\n";
+
     dolfinx::list_timings(MPI_COMM_WORLD);
   }
 
