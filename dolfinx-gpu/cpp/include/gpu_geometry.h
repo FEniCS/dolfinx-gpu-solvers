@@ -79,7 +79,7 @@ __global__ void geometry_computation_G6(T* G_entity, const T* xgeom,
   {
     // dphi has shape [gdim, ncdofs]
     auto _dphi = [&dphi, nq, iq](int i, int j) -> const T
-    { return dphi[(i * nq + iq) * ncdofs + j]; };
+    { return dphi[((i + 1) * nq + iq) * ncdofs + j]; };
     for (std::size_t i = 0; i < gdim; i++)
     {
       for (std::size_t j = 0; j < gdim; j++)
@@ -182,7 +182,7 @@ __global__ void geometry_computation_detJ(T* G_entity, const T* xgeom,
   {
     // dphi has shape [gdim, ncdofs]
     auto _dphi = [&dphi, nq, iq](int i, int j) -> const T
-    { return dphi[(i * nq + iq) * ncdofs + j]; };
+    { return dphi[((i + 1) * nq + iq) * ncdofs + j]; };
     for (std::size_t i = 0; i < gdim; i++)
     {
       for (std::size_t j = 0; j < gdim; j++)
