@@ -29,7 +29,7 @@ find_package(nanobind CONFIG REQUIRED)
 
 # If CUDA is available, the user should set CUDA_ARCH environment variable
 if(DEFINED ENV{CUDA_ARCH})
-  set(CMAKE_CUDA_ARCHITECTURES ${CUDA_ARCH})
+  set(CMAKE_CUDA_ARCHITECTURES $ENV{CUDA_ARCH})
   set(CMAKE_CUDA_STANDARD 20)
   enable_language(CUDA)
   set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -g -march=native -std=c++20 -O3 -DNDEBUG --extended-lambda --expt-relaxed-constexpr -lineinfo")
@@ -37,7 +37,7 @@ endif()
 
 # If HIP is available, the user should set HIP_ARCH environment variable
 if(DEFINED ENV{HIP_ARCH})
-  set(CMAKE_HIP_ARCHITECTURES ${HIP_ARCH})
+  set(CMAKE_HIP_ARCHITECTURES $ENV{HIP_ARCH})
   set(CMAKE_HIP_STANDARD 20)
   enable_language(HIP)
 endif()
