@@ -206,11 +206,11 @@ __global__ void geometry_computation_detJ(T* G_entity, const T* xgeom,
 
 } // namespace
 
-template <typename T>
+// Constrains the value_type of FPholder to be floating point
+template <typename ContainerT>
 concept FPholder = requires {
-  typename T::value_type;
-  requires std::is_floating_point_v<
-      typename T::value_type>; // Constrains the value_type to be floating point
+  typename ContainerT::value_type;
+  requires std::is_floating_point_v<typename ContainerT::value_type>;
 };
 
 /// On-device storage of geometry data, used to compute geometric factor at
