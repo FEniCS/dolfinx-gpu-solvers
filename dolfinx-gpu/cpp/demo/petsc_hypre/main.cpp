@@ -1,3 +1,4 @@
+#include "gpu_petsc.h"
 #include "poisson.h"
 #include <basix/finite-element.h>
 #include <cmath>
@@ -93,13 +94,8 @@ int main(int argc, char* argv[])
     la::SparsityPattern sp = fem::create_sparsity_pattern(a);
     sp.finalize();
 
-#ifdef __CUDACC__
-    Mat device_mat = la::petsc::create_matrix(mesh->comm(), sp, "aijcusparse");
-#endif
-#ifdef __HIPCC__
-    Mat device_mat = la::petsc::create_matrix(mesh->comm(), sp, "aijhipsparse");
-#endif
-
+    Mat device_mat
+        = la::petsc::create_matrix(mesh->comm(), sp, aijdevicesparse);
     MatZeroEntries(device_mat);
 
     auto set_fn = la::petsc::Matrix::set_block_fn(device_mat, ADD_VALUES);
@@ -135,13 +131,6 @@ int main(int argc, char* argv[])
     const PetscInt global_size = index_map->size_global();
     Vec b_petsc;
     Vec u_petsc;
-
-#ifdef __HIPCC__
-#define VecCreateMPIDeviceWithArray VecCreateMPIHIPWithArray
-#endif
-#ifdef __CUDACC__
-#define VecCreateMPIDeviceWithArray VecCreateMPICUDAWithArray
-#endif
 
     int ierr = VecCreateMPIDeviceWithArray(
         mesh->comm(), PetscInt(1), local_size, global_size,

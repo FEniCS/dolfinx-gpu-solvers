@@ -39,7 +39,6 @@ endif()
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
 add_executable(${PROJECT_NAME} main.cpp ${CMAKE_CURRENT_BINARY_DIR}/poisson.c)
-target_include_directories(${PROJECT_NAME} PUBLIC /opt/cray/pe/mpich/8.1.29/ofi/gnu/12.3/include/)
 target_link_libraries(${PROJECT_NAME} dolfinx)
 
 # Set C++20 standard
