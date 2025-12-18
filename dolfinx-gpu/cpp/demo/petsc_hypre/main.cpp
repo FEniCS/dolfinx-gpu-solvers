@@ -28,7 +28,7 @@ int main(int argc, char* argv[])
     auto part = mesh::create_cell_partitioner(mesh::GhostMode::shared_facet);
     auto mesh = std::make_shared<mesh::Mesh<U>>(
         mesh::create_rectangle<U>(MPI_COMM_WORLD, {{{0.0, 0.0}, {2.0, 1.0}}},
-                                  {320, 320}, mesh::CellType::triangle, part));
+                                  {3200, 320}, mesh::CellType::triangle, part));
 
     auto element = basix::create_element<U>(
         basix::element::family::P, basix::cell::type::triangle, 1,
@@ -137,22 +137,18 @@ int main(int argc, char* argv[])
     Vec u_petsc;
 
 #ifdef __HIPCC__
-    int ierr = VecCreateMPIHIPWithArray(
-        mesh->comm(), PetscInt(1), local_size, global_size,
-        b_device.array().data().get(), &b_petsc);
-    ierr = VecCreateMPIHIPWithArray(mesh->comm(), PetscInt(1), local_size,
-                                    global_size, u_device.array().data().get(),
-                                    &u_petsc);
+#define VecCreateMPIDeviceWithArray VecCreateMPIHIPWithArray
+#endif
+#ifdef __CUDACC__
+#define VecCreateMPIDeviceWithArray VecCreateMPICUDAWithArray
 #endif
 
-#ifdef __CUDACC__
-    int ierr = VecCreateMPICUDAWithArray(
+    int ierr = VecCreateMPIDeviceWithArray(
         mesh->comm(), PetscInt(1), local_size, global_size,
         b_device.array().data().get(), &b_petsc);
-    ierr = VecCreateMPICUDAWithArray(mesh->comm(), PetscInt(1), local_size,
-                                     global_size, u_device.array().data().get(),
-                                     &u_petsc);
-#endif
+    ierr = VecCreateMPIDeviceWithArray(mesh->comm(), PetscInt(1), local_size,
+                                       global_size,
+                                       u_device.array().data().get(), &u_petsc);
 
     spdlog::info("ierr={}", ierr);
 
