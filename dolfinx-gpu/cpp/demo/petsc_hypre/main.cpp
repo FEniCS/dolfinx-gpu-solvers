@@ -93,7 +93,13 @@ int main(int argc, char* argv[])
     la::SparsityPattern sp = fem::create_sparsity_pattern(a);
     sp.finalize();
 
+#ifdef __CUDACC__
     Mat device_mat = la::petsc::create_matrix(mesh->comm(), sp, "aijcusparse");
+#endif
+#ifdef __HIPCC__
+    Mat device_mat = la::petsc::create_matrix(mesh->comm(), sp, "aijhipsparse");
+#endif
+
     MatZeroEntries(device_mat);
 
     auto set_fn = la::petsc::Matrix::set_block_fn(device_mat, ADD_VALUES);
@@ -129,12 +135,25 @@ int main(int argc, char* argv[])
     const PetscInt global_size = index_map->size_global();
     Vec b_petsc;
     Vec u_petsc;
+
+#ifdef __HIPCC__
+    int ierr = VecCreateMPIHIPWithArray(
+        mesh->comm(), PetscInt(1), local_size, global_size,
+        b_device.array().data().get(), &b_petsc);
+    ierr = VecCreateMPIHIPWithArray(mesh->comm(), PetscInt(1), local_size,
+                                    global_size, u_device.array().data().get(),
+                                    &u_petsc);
+#endif
+
+#ifdef __CUDACC__
     int ierr = VecCreateMPICUDAWithArray(
         mesh->comm(), PetscInt(1), local_size, global_size,
         b_device.array().data().get(), &b_petsc);
     ierr = VecCreateMPICUDAWithArray(mesh->comm(), PetscInt(1), local_size,
                                      global_size, u_device.array().data().get(),
                                      &u_petsc);
+#endif
+
     spdlog::info("ierr={}", ierr);
 
     spdlog::info("Create Petsc KSP");
