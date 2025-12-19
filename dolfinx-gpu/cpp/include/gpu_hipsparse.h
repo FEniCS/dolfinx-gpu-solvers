@@ -4,6 +4,8 @@
 //
 // SPDX-License-Identifier:    MIT
 
+#pragma once
+
 #include <cassert>
 #include <complex>
 #include <cstdint>
