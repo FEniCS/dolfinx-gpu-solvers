@@ -37,8 +37,6 @@ endif()
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 set(CMAKE_CUDA_ARCHITECTURES 89)
 
-set_source_files_properties(main.cpp PROPERTIES LANGUAGE CUDA)
-
 find_package(Ginkgo)
 
 add_executable(${PROJECT_NAME} main.cpp ${CMAKE_CURRENT_BINARY_DIR}/poisson.c)
