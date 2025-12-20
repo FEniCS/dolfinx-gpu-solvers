@@ -28,7 +28,7 @@ __global__ void geometry_computation_G6(T* G_entity, const T* xgeom,
                                         const std::int32_t* geometry_dofmap,
                                         const T* dphi, const T* weights,
                                         const int* entities, int n_entities,
-                                        int nq)
+                                        int nq, int ncdofs)
 {
   // One block per cell
   int c = blockIdx.x;
@@ -40,13 +40,10 @@ __global__ void geometry_computation_G6(T* G_entity, const T* xgeom,
   // Cell index
   int cell = entities[c];
 
-  // Number of coordinate dofs
-  constexpr int ncdofs = 4;
-
   // Geometric dimension
   constexpr int gdim = 3;
 
-  __shared__ T _coord_dofs[ncdofs * gdim];
+  extern __shared__ T _coord_dofs[];
 
   // First collect geometry into shared memory
   int iq = threadIdx.x;
@@ -68,6 +65,7 @@ __global__ void geometry_computation_G6(T* G_entity, const T* xgeom,
           = xgeom[3 * geometry_dofmap[cell * ncdofs + iq] + j];
   }
   __syncthreads();
+
   // One quadrature point per thread
 
   // Jacobian
@@ -78,7 +76,7 @@ __global__ void geometry_computation_G6(T* G_entity, const T* xgeom,
   // For each quadrature point / thread
   {
     // dphi has shape [gdim, ncdofs]
-    auto _dphi = [&dphi, nq, iq](int i, int j) -> const T
+    auto _dphi = [&dphi, nq, ncdofs, iq](int i, int j) -> const T
     { return dphi[((i + 1) * nq + iq) * ncdofs + j]; };
     for (std::size_t i = 0; i < gdim; i++)
     {
@@ -131,7 +129,7 @@ __global__ void geometry_computation_detJ(T* G_entity, const T* xgeom,
                                           const std::int32_t* geometry_dofmap,
                                           const T* dphi, const T* weights,
                                           const int* entities, int n_entities,
-                                          int nq)
+                                          int nq, int ncdofs)
 {
   // One block per cell
   int c = blockIdx.x;
@@ -143,13 +141,11 @@ __global__ void geometry_computation_detJ(T* G_entity, const T* xgeom,
   // Cell index
   int cell = entities[c];
 
-  // Number of coordinate dofs
-  constexpr int ncdofs = 4;
-
   // Geometric dimension
   constexpr int gdim = 3;
 
-  __shared__ T _coord_dofs[ncdofs * gdim];
+  // Size ncdofs*gdim
+  extern __shared__ T _coord_dofs[];
 
   // First collect geometry into shared memory
   int iq = threadIdx.x;
@@ -181,7 +177,7 @@ __global__ void geometry_computation_detJ(T* G_entity, const T* xgeom,
   // For each quadrature point / thread
   {
     // dphi has shape [gdim, ncdofs]
-    auto _dphi = [&dphi, nq, iq](int i, int j) -> const T
+    auto _dphi = [&dphi, nq, ncdofs, iq](int i, int j) -> const T
     { return dphi[((i + 1) * nq + iq) * ncdofs + j]; };
     for (std::size_t i = 0; i < gdim; i++)
     {
@@ -257,6 +253,9 @@ private:
 
   // Number of quadrature points per cell
   std::size_t nq;
+
+  // Number of coordinate dofs
+  std::size_t ncdofs;
 };
 
 /// Initialize
@@ -273,6 +272,8 @@ GPUGeometry<ContainerT, ContainerI>::GPUGeometry(
   geom_dofmap.assign(geometry.dofmap().data_handle(),
                      geometry.dofmap().data_handle()
                          + geometry.dofmap().size());
+
+  ncdofs = geometry.dofmap().extent(1);
 
   // Set up quadrature weights and basis functions
   basix::cell::type cell_type = cell_type_to_basix_type(element.cell_shape());
@@ -305,10 +306,11 @@ void GPUGeometry<ContainerT, ContainerI>::compute_G6(ContainerT& G_q,
 
   dim3 block_size_g(nq);
   dim3 grid_size_g(cells.size());
-  geometry_computation_G6<T><<<grid_size_g, block_size_g>>>(
+  std::size_t shm_size = 3 * ncdofs * sizeof(T);
+  geometry_computation_G6<T><<<grid_size_g, block_size_g, shm_size>>>(
       G_q.data().get(), geom_x.data().get(), geom_dofmap.data().get(),
       phi_data.data().get(), weights.data().get(), cells.data().get(),
-      cells.size(), nq);
+      cells.size(), nq, ncdofs);
 }
 //--------------------------------------------------------------------------
 template <FPholder ContainerT, typename ContainerI>
@@ -318,8 +320,9 @@ void GPUGeometry<ContainerT, ContainerI>::compute_detJ(ContainerT& detJ_q,
   using T = ContainerT::value_type;
   dim3 block_size_g(nq);
   dim3 grid_size_g(cells.size());
-  geometry_computation_detJ<T><<<grid_size_g, block_size_g>>>(
+  std::size_t shm_size = 3 * ncdofs * sizeof(T);
+  geometry_computation_detJ<T><<<grid_size_g, block_size_g, shm_size>>>(
       detJ_q.data().get(), geom_x.data().get(), geom_dofmap.data().get(),
       phi_data.data().get(), weights.data().get(), cells.data().get(),
-      cells.size(), nq);
+      cells.size(), nq, ncdofs);
 }
