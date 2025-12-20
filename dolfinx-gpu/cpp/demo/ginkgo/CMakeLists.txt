@@ -5,31 +5,12 @@
 cmake_minimum_required(VERSION 3.21)
 
 set(PROJECT_NAME demo_poisson)
-project(${PROJECT_NAME} LANGUAGES C CXX CUDA)
+project(${PROJECT_NAME} LANGUAGES C CXX)
 
 if(NOT TARGET dolfinx)
   find_package(DOLFINX REQUIRED)
 endif()
 
-include(CheckSymbolExists)
-set(CMAKE_REQUIRED_INCLUDES ${PETSC_INCLUDE_DIRS})
-check_symbol_exists(PETSC_USE_COMPLEX petscsystypes.h PETSC_SCALAR_COMPLEX)
-check_symbol_exists(PETSC_USE_REAL_DOUBLE petscsystypes.h PETSC_REAL_DOUBLE)
-
-# Add target to compile UFL files
-if(PETSC_SCALAR_COMPLEX EQUAL 1)
-  if(PETSC_REAL_DOUBLE EQUAL 1)
-    set(SCALAR_TYPE "--scalar_type=complex128")
-  else()
-    set(SCALAR_TYPE "--scalar_type=complex64")
-  endif()
-else()
-  if(PETSC_REAL_DOUBLE EQUAL 1)
-    set(SCALAR_TYPE "--scalar_type=float64")
-  else()
-    set(SCALAR_TYPE "--scalar_type=float32")
-  endif()
-endif()
 add_custom_command(
   OUTPUT poisson.c
   COMMAND ffcx ${CMAKE_CURRENT_SOURCE_DIR}/poisson.py ${SCALAR_TYPE}
@@ -37,6 +18,21 @@ add_custom_command(
   DEPENDS poisson.py
   COMMENT "Compile poisson.py using FFCx"
 )
+
+if(DEFINED ENV{CUDA_ARCH})
+  set(CMAKE_CUDA_ARCHITECTURES $ENV{CUDA_ARCH})
+  set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -g -march=native -std=c++20 -O3 -DNDEBUG --extended-lambda --expt-relaxed-constexpr -lineinfo")
+  message(STATUS "Set CUDA architecture to $ENV{CUDA_ARCH}")
+  enable_language(CUDA)
+  set_source_files_properties(main.cpp PROPERTIES LANGUAGE CUDA)
+elseif(DEFINED ENV{HIP_ARCH})
+  set(CMAKE_HIP_ARCHITECTURES $ENV{HIP_ARCH})
+  set(CMAKE_HIP_STANDARD 20)
+  enable_language(HIP)
+  set_source_files_properties(main.cpp PROPERTIES LANGUAGE HIP)
+else()
+  message(FATAL_ERROR "Set CUDA_ARCH or HIP_ARCH")
+endif()
 
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 set(CMAKE_CUDA_ARCHITECTURES 89)
