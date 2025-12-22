@@ -8,9 +8,9 @@ a mass matrix.
 
 * NVIDIA CUDA 12.9+
 * NVIDIA cuSPARSE
-* NVIDIA cuDSS library
-* dolfinx
-* ffcx
+* NVIDIA cuDSS library 0.7.0+
+* dolfinx 0.10.0+
+* ffcx 0.10.0+
 
 ## Building
 

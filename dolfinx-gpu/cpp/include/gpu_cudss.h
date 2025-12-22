@@ -9,6 +9,7 @@
 #include <cassert>
 #include <complex>
 #include <cudss.h>
+#include <mpi.h>
 
 /// Interfaces to CUDA library functions
 /// using dolfinx Vector and MatrixCSR which are
@@ -29,7 +30,9 @@ public:
   /// @param A_device CSR Matrix stored on device
   /// @param b_device RHS Vector stored on device
   /// @param u_device Solution Vector stored on device
-  cudssSolver(MatType& A_device, VecType& b_device, VecType& u_device);
+  /// @param ndevices Number of local GPUs attached (MG mode)
+  cudssSolver(MatType& A_device, VecType& b_device, VecType& u_device,
+              int ndevices = 1);
 
   /// Destructor
   ~cudssSolver();
@@ -46,6 +49,11 @@ public:
   /// @note Matrix must be factorized before calling solve
   void solve();
 
+  /// @brief Set communication layer
+  /// Sets the communication library from the environment variable
+  /// `CUDSS_COMM_LIB`
+  void set_comm_layer(MPI_Comm& comm);
+
 private:
   /// Data structures wrapping matrix and vectors
   cudssMatrix_t A_dss;
@@ -59,8 +67,19 @@ private:
 };
 //-----------------------------------------------------------------------------
 template <typename MatType, typename VecType>
+void cudssSolver<MatType, VecType>::set_comm_layer(MPI_Comm& comm)
+{
+  cudssStatus_t status = cudssSetCommLayer(handle, NULL);
+  if (status != CUDSS_STATUS_SUCCESS)
+    throw std::runtime_error("CUDSS: error setting comm layer");
+  status = cudssDataSet(handle, data, CUDSS_DATA_COMM, &comm, sizeof(comm));
+  if (status != CUDSS_STATUS_SUCCESS)
+    throw std::runtime_error("CUDSS: error setting comm data");
+}
+//-----------------------------------------------------------------------------
+template <typename MatType, typename VecType>
 cudssSolver<MatType, VecType>::cudssSolver(MatType& A_device, VecType& b_device,
-                                           VecType& u_device)
+                                           VecType& u_device, int ndevices)
 {
   using T = MatType::value_type;
   using U = VecType::value_type;
@@ -78,7 +97,7 @@ cudssSolver<MatType, VecType>::cudssSolver(MatType& A_device, VecType& b_device,
   else
     throw std::runtime_error("CUDSS: invalid data type");
 
-  cudssStatus_t status = cudssCreate(&handle);
+  cudssStatus_t status = cudssCreateMg(&handle, ndevices, NULL);
   if (status != CUDSS_STATUS_SUCCESS)
     throw std::runtime_error("CUDSS: error creating handle");
   status = cudssConfigCreate(&config);

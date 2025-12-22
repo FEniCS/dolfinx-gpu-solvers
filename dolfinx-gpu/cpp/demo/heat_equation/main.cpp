@@ -40,6 +40,10 @@ int main(int argc, char* argv[])
   MPI_Init(&argc, &argv);
   dolfinx::init_logging(argc, argv);
 
+  int ndevices = 0;
+  cudaGetDeviceCount(&ndevices);
+  std::cout << "Found " << ndevices << " GPUs\n";
+ 
   {
     // Create mesh and function space
     auto part = mesh::create_cell_partitioner(mesh::GhostMode::shared_facet);
@@ -171,7 +175,7 @@ int main(int argc, char* argv[])
         Amass_device(Amass);
     dolfinx::la::cuda::cusparseMatVec spmv(Amass_device, b_device, u_device);
 
-    dolfinx::la::cuda::cudssSolver solver(A_device, b_device, u_device);
+    dolfinx::la::cuda::cudssSolver solver(A_device, b_device, u_device, ndevices);
 
     dolfinx::common::Timer tsolve1("Solve CUDSS - analysis");
     solver.analyze();
