@@ -18,6 +18,9 @@
 
 #include "../../include/gpu_geometry.h"
 
+#include "laplacian.h"
+#include "sparsity.h"
+
 using namespace dolfinx;
 using T = double;
 using U = typename dolfinx::scalar_value_t<T>;
@@ -40,28 +43,52 @@ int main(int argc, char* argv[])
         basix::element::lagrange_variant::unset,
         basix::element::dpc_variant::unset, false);
 
+    auto V
+        = std::make_shared<fem::FunctionSpace<U>>(fem::create_functionspace<U>(
+            mesh, std::make_shared<fem::FiniteElement<U>>(element)));
+
+    // Create matrix data structure
+    GPUDofMap<thrust::device_vector<std::int32_t>> gpu_dofmap(*(V->dofmap()));
+    GPUSparsityPattern gpu_sparsity = create_sparsity(gpu_dofmap);
+    auto A = dolfinx::la::MatrixCSR<T, thrust::device_vector<T>,
+                                    thrust::device_vector<std::int32_t>,
+                                    thrust::device_vector<std::int32_t>>(
+        gpu_sparsity);
+
+    // Copy mesh geometry to device, and select quadrature
     int qdegree = 2;
     GPUGeometry<thrust::device_vector<U>, thrust::device_vector<std::int32_t>>
         gpu_geom(mesh->geometry(), qdegree);
-    int nq = gpu_geom.num_qp();
+    std::size_t nq = gpu_geom.qpoints().size();
 
     // Prepare on-device containers for computation at quadrature points
     thrust::device_vector<U> G6_data(
         6 * nq * mesh->topology()->index_map(3)->size_local());
-    thrust::device_vector<std::int32_t> cells = {0};
+    thrust::device_vector<std::int32_t> cells(gpu_dofmap.extent(0));
+    thrust::copy(thrust::make_counting_iterator(0),
+                 thrust::make_counting_iterator((int)cells.size()),
+                 cells.begin());
     gpu_geom.compute_G6(G6_data, cells);
 
-    std::vector<U> g_cpu(G6_data.size());
-    thrust::copy(G6_data.begin(), G6_data.end(), g_cpu.begin());
-    std::cout << "G6=\n";
-    for (int i = 0; i < 6 * nq; ++i)
-      std::cout << i << ": " << g_cpu[i] << "\n";
+    // Tabulate basis for element
+    auto shape = element.tabulate_shape(1, nq);
+    std::vector<T> table(
+        std::accumulate(shape.begin(), shape.end(), 1, std::multiplies<int>()));
+    std::vector<T> qpoints(gpu_geom.qpoints().size());
+    thrust::copy(gpu_geom.qpoints().begin(), gpu_geom.qpoints().end(),
+                 qpoints.begin());
+    element.tabulate(1, std::span(qpoints), {nq, 3}, std::span(table));
+    assert(shape.size() == 4);
+    assert(shape[0] == 4);
+    assert(shape[1] == nq);
+    int ndofs = shape[2];
+    assert(shape[3] == 1);
 
-    gpu_geom.compute_detJ(G6_data, cells);
-    thrust::copy(G6_data.begin(), G6_data.end(), g_cpu.begin());
-    std::cout << "detJ=\n";
-    for (int i = 0; i < nq; ++i)
-      std::cout << i << ": " << g_cpu[i] << "\n";
+    // Copy basis function and derivatives at qpts to phi_data
+    thrust::device_vector<T> phi_data(table.begin(), table.end());
+
+    // Assemble Laplacian on-device
+    assemble(A, phi_data, G6_data, gpu_dofmap.map(), cells, nq, ndofs);
 
     dolfinx::list_timings(MPI_COMM_WORLD);
   }

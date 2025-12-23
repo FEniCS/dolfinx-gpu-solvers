@@ -8,7 +8,7 @@
 #include <cstdio>
 #include <dolfinx/mesh/Geometry.h>
 
-namespace
+namespace detail
 {
 /// @brief Computes weighted 3x3 symmetric geometry tensor G from the
 /// coordinates and quadrature weights.
@@ -200,7 +200,7 @@ __global__ void geometry_computation_detJ(T* G_entity, const T* xgeom,
   }
 }
 
-} // namespace
+} // namespace detail
 
 // Constrains the value_type of FPholder to be floating point
 template <typename ContainerT>
@@ -223,20 +223,19 @@ public:
   /// integration)
   GPUGeometry(const dolfinx::mesh::Geometry<T>& geom, int qdegree);
 
-  void set_weights();
-
-  /// Number of quadrature points
-  std::size_t num_qp() { return nq; }
-
   /// Compute the 6 entries of the symmetric geometry tensor
   /// @param[out] G6_q Values at quadrature points
   /// @param[in] cells List of cells to compute on
-  void compute_G6(ContainerT& G6_q, const ContainerI& cells);
+  void compute_G6(ContainerT& G6_q, const ContainerI& cells) const;
 
   /// Compute the determinant of the geometry jacobian at quadrature points
   /// @param[out] detJ_q Determinant of the Jacobian at quadrature points
   /// @param[in] cells List of cells to compute on
-  void compute_detJ(ContainerT& detJ_q, const ContainerI& cells);
+  void compute_detJ(ContainerT& detJ_q, const ContainerI& cells) const;
+
+  /// TODO: Get quadrature points and weights
+  const ContainerT& qpoints() const { return points; }
+  const ContainerT& qweights() const { return weights; }
 
 private:
   // Geometry coordinates
@@ -245,10 +244,13 @@ private:
   // Flattened geometry dofmap
   ContainerI geom_dofmap;
 
+  // Quadrature points
+  ContainerT points;
+
   // Quadrature weights
   ContainerT weights;
 
-  // Basis function and derivatives for geometry
+  // Basis function and derivatives (for geometry)
   ContainerT phi_data;
 
   // Number of quadrature points per cell
@@ -296,32 +298,33 @@ GPUGeometry<ContainerT, ContainerI>::GPUGeometry(
   // Copy basis function and derivatives at qpts to phi_data
   phi_data.assign(table.begin(), table.end());
   weights.assign(qweights.begin(), qweights.end());
+  points.assign(qpoints.begin(), qpoints.end());
 }
 //--------------------------------------------------------------------------
 template <FPholder ContainerT, typename ContainerI>
-void GPUGeometry<ContainerT, ContainerI>::compute_G6(ContainerT& G_q,
-                                                     const ContainerI& cells)
+void GPUGeometry<ContainerT, ContainerI>::compute_G6(
+    ContainerT& G_q, const ContainerI& cells) const
 {
   using T = ContainerT::value_type;
 
   dim3 block_size_g(nq);
   dim3 grid_size_g(cells.size());
   std::size_t shm_size = 3 * ncdofs * sizeof(T);
-  geometry_computation_G6<T><<<grid_size_g, block_size_g, shm_size>>>(
+  detail::geometry_computation_G6<T><<<grid_size_g, block_size_g, shm_size>>>(
       G_q.data().get(), geom_x.data().get(), geom_dofmap.data().get(),
       phi_data.data().get(), weights.data().get(), cells.data().get(),
       cells.size(), nq, ncdofs);
 }
 //--------------------------------------------------------------------------
 template <FPholder ContainerT, typename ContainerI>
-void GPUGeometry<ContainerT, ContainerI>::compute_detJ(ContainerT& detJ_q,
-                                                       const ContainerI& cells)
+void GPUGeometry<ContainerT, ContainerI>::compute_detJ(
+    ContainerT& detJ_q, const ContainerI& cells) const
 {
   using T = ContainerT::value_type;
   dim3 block_size_g(nq);
   dim3 grid_size_g(cells.size());
   std::size_t shm_size = 3 * ncdofs * sizeof(T);
-  geometry_computation_detJ<T><<<grid_size_g, block_size_g, shm_size>>>(
+  detail::geometry_computation_detJ<T><<<grid_size_g, block_size_g, shm_size>>>(
       detJ_q.data().get(), geom_x.data().get(), geom_dofmap.data().get(),
       phi_data.data().get(), weights.data().get(), cells.data().get(),
       cells.size(), nq, ncdofs);
