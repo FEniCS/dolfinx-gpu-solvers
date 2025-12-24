@@ -15,6 +15,7 @@
 #include <vector>
 
 #include <thrust/device_vector.h>
+#include <thrust/inner_product.h>
 
 #include "../../include/gpu_geometry.h"
 
@@ -37,7 +38,7 @@ int main(int argc, char* argv[])
         MPI_COMM_WORLD, {{{0.0, 0.0, 0.0}, {1.0, 1.0, 1.0}}}, {10, 10, 10},
         mesh::CellType::tetrahedron, part));
 
-    int degree = 2;
+    int degree = 1;
     auto element = basix::create_element<U>(
         basix::element::family::P, basix::cell::type::tetrahedron, degree,
         basix::element::lagrange_variant::unset,
@@ -56,18 +57,18 @@ int main(int argc, char* argv[])
         gpu_sparsity);
 
     // Copy mesh geometry to device, and select quadrature
-    int qdegree = 2;
+    int qdegree = 1;
     GPUGeometry<thrust::device_vector<U>, thrust::device_vector<std::int32_t>>
         gpu_geom(mesh->geometry(), qdegree);
-    std::size_t nq = gpu_geom.qpoints().size();
+    std::size_t nq = gpu_geom.qweights().size();
 
     // Prepare on-device containers for computation at quadrature points
-    thrust::device_vector<U> G6_data(
-        6 * nq * mesh->topology()->index_map(3)->size_local());
-    thrust::device_vector<std::int32_t> cells(gpu_dofmap.extent(0));
+    int ncells = mesh->topology()->index_map(3)->size_local();
+    std::cout << "ncells = " << ncells << ", nq = " << nq << "\n";
+    thrust::device_vector<U> G6_data(6 * nq * ncells);
+    thrust::device_vector<std::int32_t> cells(ncells);
     thrust::copy(thrust::make_counting_iterator(0),
-                 thrust::make_counting_iterator((int)cells.size()),
-                 cells.begin());
+                 thrust::make_counting_iterator(ncells), cells.begin());
     gpu_geom.compute_G6(G6_data, cells);
 
     // Tabulate basis for element
@@ -84,11 +85,18 @@ int main(int argc, char* argv[])
     int ndofs = shape[2];
     assert(shape[3] == 1);
 
+    std::cout << "Ndofs(element) = " << ndofs << "\n";
+
     // Copy basis function and derivatives at qpts to phi_data
     thrust::device_vector<T> phi_data(table.begin(), table.end());
 
     // Assemble Laplacian on-device
     assemble(A, phi_data, G6_data, gpu_dofmap.map(), cells, nq, ndofs);
+
+    T norm = thrust::inner_product(A.values().begin(), A.values().end(),
+                                   A.values().begin(), 0.0);
+
+    std::cout << "A.norm = " << norm << "\n";
 
     dolfinx::list_timings(MPI_COMM_WORLD);
   }

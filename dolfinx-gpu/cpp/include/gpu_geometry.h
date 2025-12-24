@@ -293,7 +293,7 @@ GPUGeometry<ContainerT, ContainerI>::GPUGeometry(
   assert(shape[1] == nq);
   int ndofs = shape[2];
   assert(shape[3] == 1);
-  std::cout << "ndofs = " << ndofs << ", nq = " << nq << "\n";
+  std::cout << "ndofs(geometry) = " << ndofs << ", nq = " << nq << "\n";
 
   // Copy basis function and derivatives at qpts to phi_data
   phi_data.assign(table.begin(), table.end());
