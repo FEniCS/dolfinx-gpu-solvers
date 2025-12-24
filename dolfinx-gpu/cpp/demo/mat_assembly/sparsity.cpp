@@ -51,11 +51,12 @@ create_sparsity(const GPUDofMap<thrust::device_vector<std::int32_t>>& dm)
   // Remove duplicates
   thrust::device_vector<std::int32_t> reduced_rows(row_keys.size());
   thrust::device_vector<std::int32_t> reduced_cols(col_vals.size());
-  auto new_end = thrust::reduce_by_key(
-      zip_begin, zip_end, thrust::make_constant_iterator(1),
-      thrust::make_zip_iterator(
-          thrust::make_tuple(reduced_rows.begin(), reduced_cols.begin())),
-      thrust::make_discard_iterator());
+  thrust::device_vector<std::int32_t> counts(row_keys.size(), 1);
+  auto reduce_zip_begin = thrust::make_zip_iterator(
+      thrust::make_tuple(reduced_rows.begin(), reduced_cols.begin()));
+  // Just use thrust::reduce_by_key as "unique" (ignores counts)
+  auto new_end = thrust::reduce_by_key(zip_begin, zip_end, counts.begin(),
+                                       reduce_zip_begin, counts.begin());
   auto row_end = thrust::get<0>(new_end.first.get_iterator_tuple());
   reduced_rows.erase(row_end, reduced_rows.end());
   auto col_end = thrust::get<1>(new_end.first.get_iterator_tuple());
@@ -63,10 +64,12 @@ create_sparsity(const GPUDofMap<thrust::device_vector<std::int32_t>>& dm)
 
   // Count entries per row and create offset array
   thrust::device_vector<std::int32_t> row_ptr(reduced_rows.size());
+  thrust::device_vector<std::int32_t> dummy(reduced_rows.size());
+  thrust::fill(counts.begin(), counts.end(), 1);
+  // Use thrust::reduce_by_key to count (ignores unique output)
   auto rp_end
       = thrust::reduce_by_key(reduced_rows.begin(), reduced_rows.end(),
-                              thrust::make_constant_iterator(1),
-                              thrust::make_discard_iterator(), row_ptr.begin());
+                              counts.begin(), dummy.begin(), row_ptr.begin());
   row_ptr.erase(rp_end.second, row_ptr.end());
   row_ptr.push_back(0);
   // Create offsets from counts
