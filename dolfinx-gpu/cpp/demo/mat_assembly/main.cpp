@@ -51,10 +51,10 @@ int main(int argc, char* argv[])
     // Create matrix data structure
     GPUDofMap<thrust::device_vector<std::int32_t>> gpu_dofmap(*(V->dofmap()));
     GPUSparsityPattern gpu_sparsity = create_sparsity(gpu_dofmap);
-    auto A = dolfinx::la::MatrixCSR<T, thrust::device_vector<T>,
-                                    thrust::device_vector<std::int32_t>,
-                                    thrust::device_vector<std::int32_t>>(
-        gpu_sparsity);
+    dolfinx::la::MatrixCSR<T, thrust::device_vector<T>,
+                           thrust::device_vector<std::int32_t>,
+                           thrust::device_vector<std::int32_t>>
+        A(gpu_sparsity);
 
     // Copy mesh geometry to device, and select quadrature
     int qdegree = 1;
@@ -91,7 +91,8 @@ int main(int argc, char* argv[])
     thrust::device_vector<T> phi_data(table.begin(), table.end());
 
     // Assemble Laplacian on-device
-    assemble(A, phi_data, G6_data, gpu_dofmap.map(), cells, nq, ndofs);
+    assemble_mat_laplacian(A, phi_data, G6_data, gpu_dofmap.map(), cells, nq,
+                           ndofs);
 
     T norm = thrust::inner_product(A.values().begin(), A.values().end(),
                                    A.values().begin(), 0.0);

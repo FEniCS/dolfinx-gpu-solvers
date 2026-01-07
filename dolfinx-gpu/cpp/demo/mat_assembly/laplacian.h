@@ -27,19 +27,19 @@ __global__ void laplacian_matinsert(
     const T* __restrict__ G_entity, const std::int32_t* __restrict__ cell_dofs,
     const int* __restrict__ cells, int ncells, int nq, int ndofs)
 {
-  if (blockDim.x != ndofs or blockDim.y != ndofs)
-  {
-    printf("Incorrect blockDim\n");
-    abort();
-  }
+  // if (blockDim.x != ndofs or blockDim.y != ndofs)
+  // {
+  //   printf("Incorrect blockDim\n");
+  //   abort();
+  // }
 
-  if (gridDim.x != ncells)
-  {
-    printf("Incorrect gridDim.x\n");
-    abort();
-  }
-  if (blockIdx.x >= ncells)
-    abort();
+  // if (gridDim.x != ncells)
+  // {
+  //   printf("Incorrect gridDim.x\n");
+  //   abort();
+  // }
+  // if (blockIdx.x >= ncells)
+  //   abort();
 
   int cell_id = cells[blockIdx.x];
 
@@ -106,10 +106,10 @@ __global__ void laplacian_matinsert(
 /// @param nq Number of quadrature points per cell
 /// @param ndofs Number of dofs on each cell
 template <typename T, typename ContainerT, typename ContainerI>
-void assemble(dolfinx::la::MatrixCSR<T, ContainerT, ContainerI, ContainerI>& A,
-              const ContainerT& phi_data, const ContainerT& G,
-              const ContainerI& cell_dofs, const ContainerI& cells, int nq,
-              int ndofs)
+void assemble_mat_laplacian(
+    dolfinx::la::MatrixCSR<T, ContainerT, ContainerI, ContainerI>& A,
+    const ContainerT& phi_data, const ContainerT& G,
+    const ContainerI& cell_dofs, const ContainerI& cells, int nq, int ndofs)
 {
   dim3 block_size(ndofs, ndofs);
   dim3 grid_size(cells.size());
