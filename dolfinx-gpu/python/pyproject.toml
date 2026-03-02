@@ -18,7 +18,7 @@ authors = [
 ]
 dependencies = [
       "numpy>=1.21",
-      "fenics-dolfinx>=0.11.0.dev0",
+      "fenics-dolfinx>=0.10.0",
 ]
 
 [tool.scikit-build]
