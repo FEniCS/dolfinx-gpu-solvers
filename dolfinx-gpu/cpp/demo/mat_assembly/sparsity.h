@@ -12,9 +12,14 @@
 #include <span>
 #include <thrust/device_vector.h>
 
+/// On-device SparsityPattern
 class GPUSparsityPattern
 {
 public:
+  /// @brief Construct a sparsity pattern
+  /// @param cols Flattened list of column indices
+  /// @param row_ptr Pointers to the start of each row in `cols`
+  /// @param index_maps Row and column index maps
   GPUSparsityPattern(
       thrust::device_vector<std::int32_t> cols,
       thrust::device_vector<std::int32_t> row_ptr,
@@ -24,6 +29,8 @@ public:
   {
   }
 
+  /// @brief Get the columns for each row
+  /// @returns column indices and row offsets as two lists
   std::pair<std::span<const std::int32_t>, std::span<const std::int32_t>>
   graph() const
   {
@@ -32,23 +39,33 @@ public:
         std::span<const std::int32_t>(row_ptr.data().get(), row_ptr.size())};
   }
 
+  /// @brief Number of non-zeros in sparsity pattern
   std::int32_t num_nonzeros() const { return cols.size(); }
 
+  /// @brief Block size for each axis
+  /// @param j Axis
   int block_size(int j) const { return bs.at(j); }
 
+  /// @brief IndexMap for each axis
+  /// @param j Axis
   std::shared_ptr<const dolfinx::common::IndexMap> index_map(int j) const
   {
     return index_maps.at(j);
   }
 
+  /// @brief Column IndexMap post-finalization
+  /// @note This is not yet implemented (needed for parallel)
   dolfinx::common::IndexMap column_index_map() const
   {
     // FIXME
     return dolfinx::common::IndexMap(index_maps[1]->comm(), 1);
   }
 
+  /// @brief Off-diagonal offsets
+  /// @note This is not yet implemented (needed for parallel)
   std::span<const std::int32_t> off_diagonal_offsets() const
   {
+    // FIXME
     return _off_diagonal_offsets;
   }
 
@@ -65,6 +82,7 @@ template <typename ContainerI>
 class GPUDofMap
 {
 public:
+  /// @brief Construct on-device from existing DofMap
   GPUDofMap(const dolfinx::fem::DofMap& dofmap)
       : _dofmap(dofmap.map().data_handle(),
                 dofmap.map().data_handle() + dofmap.map().size()),
@@ -73,10 +91,14 @@ public:
   {
   }
 
+  /// @brief The DofMap as a flattened list
   const ContainerI& map() const { return _dofmap; }
 
+  /// @brief The size of the DofMap in each axis
+  /// @param j Axis
   std::size_t extent(int j) const { return _shape.at(j); }
 
+  /// @brief IndexMap for the DofMap
   std::shared_ptr<const dolfinx::common::IndexMap> index_map() const
   {
     return _im;
@@ -90,6 +112,6 @@ private:
 
 /// @brief Create a sparsity pattern from a dofmap
 /// @param dm DofMap
-/// @return column indices and offset row pointers for CSR matrix
+/// @return GPUSparsityPattern
 GPUSparsityPattern
 create_sparsity(const GPUDofMap<thrust::device_vector<std::int32_t>>& dm);
