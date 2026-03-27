@@ -81,6 +81,7 @@
 
 #include "poisson.h"
 #include <basix/finite-element.h>
+#include <boost/program_options.hpp>
 #include <cmath>
 #include <dolfinx.h>
 #include <dolfinx/fem/Constant.h>
@@ -94,6 +95,7 @@
 #include <thrust/device_vector.h>
 
 using namespace dolfinx;
+namespace po = boost::program_options;
 using T = double;
 using U = typename dolfinx::scalar_value_t<T>;
 
@@ -113,11 +115,40 @@ int main(int argc, char* argv[])
   MPI_Init(&argc, &argv);
   dolfinx::init_logging(argc, argv);
 
+  // Define command line options
+  po::options_description desc("Options");
+  desc.add_options()("help,h", "Print usage message")(
+      "direct", po::value<bool>()->default_value(false),
+      "Compute platform (cpu or gpu)");
+
+  // Parse command line options
+  po::variables_map vm;
+  po::store(po::command_line_parser(argc, argv)
+                .options(desc)
+                .allow_unregistered()
+                .run(),
+            vm);
+
+  po::notify(vm);
+
+  if (vm.count("help"))
+  {
+    std::cout << "DOLFINx Ginkgo demo\n-----------------\n";
+    std::cout << desc << std::endl;
+    return 0;
+  }
+  bool direct_solver = vm["direct"].as<bool>();
+
+  if (direct_solver)
+    std::cout << "Direct solver (LU)\n";
+  else
+    std::cout << "Iterative solver (CG)\n";
+
   {
     // Create mesh and function space
     auto part = mesh::create_cell_partitioner(mesh::GhostMode::shared_facet);
     auto mesh = std::make_shared<mesh::Mesh<U>>(mesh::create_box<U>(
-        MPI_COMM_WORLD, {{{0.0, 0.0, 0.0}, {1.0, 1.0, 1.0}}}, {10, 10, 10},
+        MPI_COMM_WORLD, {{{0.0, 0.0, 0.0}, {1.0, 1.0, 1.0}}}, {20, 20, 20},
         mesh::CellType::tetrahedron, part));
 
     auto element = basix::create_element<U>(
@@ -269,19 +300,34 @@ int main(int argc, char* argv[])
 
     dolfinx::common::Timer tsolve1("Set up Ginkgo");
 
-    using cg = gko::solver::Cg<T>;
-    using bj = gko::preconditioner::Jacobi<T, std::int32_t>;
-    const gko::remove_complex<T> reduction_factor = 1e-7;
-    auto solver
-        = cg::build()
-              .with_criteria(
-                  gko::stop::Iteration::build().with_max_iters(100),
-                  gko::stop::ResidualNorm<T>::build().with_reduction_factor(
-                      reduction_factor))
-              .with_preconditioner(bj::build())
-              .on(executor)
-              ->generate(
-                  clone(executor, mat)); // copy the matrix to the executor
+    std::unique_ptr<gko::LinOp> solver;
+
+    if (direct_solver)
+    {
+      auto solver_factory
+          = gko::experimental::solver::Direct<double, int>::build()
+                .with_factorization(
+                    gko::experimental::factorization::Lu<double, int>::build()
+                        .on(executor))
+                .on(executor);
+
+      solver = solver_factory->generate(gko::share(std::move(mat)));
+    }
+    else
+    {
+      using cg = gko::solver::Cg<T>;
+      using bj = gko::preconditioner::Jacobi<T, std::int32_t>;
+      const gko::remove_complex<T> reduction_factor = 1e-7;
+      solver
+          = cg::build()
+                .with_criteria(
+                    gko::stop::Iteration::build().with_max_iters(100),
+                    gko::stop::ResidualNorm<T>::build().with_reduction_factor(
+                        reduction_factor))
+                .with_preconditioner(bj::build())
+                .on(executor)
+                ->generate(gko::share(std::move(mat)));
+    }
 
     tsolve1.stop();
     tsolve1.flush();
@@ -291,9 +337,10 @@ int main(int argc, char* argv[])
 
     for (int i = 0; i < 20; ++i)
     {
-
-      dolfinx::common::Timer tsolve2("Tsolve2");
-      solver->apply(b_gko, u_gko);
+      {
+        dolfinx::common::Timer tsolve2("Call solver");
+        solver->apply(b_gko, u_gko);
+      }
 
       // Copy solution back to CPU
       thrust::copy(u_device.array().begin(), u_device.array().end(),
@@ -310,9 +357,6 @@ int main(int argc, char* argv[])
       // Copy RHS back to device
       thrust::copy(b.array().begin(), b.array().end(),
                    b_device.array().begin());
-
-      //   // Update ghost values before output
-      //   // u->x()->scatter_fwd();
 
       file.write_function<T>(*u, static_cast<double>(i));
     }

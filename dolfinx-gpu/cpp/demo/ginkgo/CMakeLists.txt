@@ -42,7 +42,7 @@ if(CMAKE_HIP_COMPILER_VERSION GREATER_EQUAL 18)
   # https://rocm.docs.amd.com/projects/llvm-project/en/docs-6.2.1/LLVM/clang/html/ReleaseNotes.html#c-specific-potentially-breaking-changes
   set(CMAKE_HIP_FLAGS "${CMAKE_HIP_FLAGS} -fclang-abi-compat=17")
 endif()
-set(CMAKE_HIP_FLAGS "${CMAKE_HIP_FLAGS} -std=c++20 -Wall -O3 -ffast-math -DNDEBUG -munsafe-fp-atomics")
+set(CMAKE_HIP_FLAGS "${CMAKE_HIP_FLAGS} -std=c++20 -Wall -O3 -ffast-math -DNDEBUG -munsafe-fp-atomics --gcc-toolchain=/opt/rh/gcc-toolset-13/root/usr/")
 
 if(DEFINED ENV{CRAYPE_VERSION})
   message("Detected CrayPE - adding MPI flags")
@@ -57,6 +57,11 @@ find_package(MPI)
 find_package(Basix REQUIRED)
 find_package(DOLFINX REQUIRED)
 find_package(Ginkgo REQUIRED)
+
+if(DEFINED ENV{BOOST_ROOT} OR DEFINED BOOST_ROOT)
+  set(Boost_NO_SYSTEM_PATHS on)
+endif()
+find_package(Boost 1.70 REQUIRED program_options)
 
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
@@ -81,7 +86,7 @@ add_executable(${PROJECT_NAME} main.cpp poisson.c)
 # endif()
 
 target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_20)
-target_link_libraries(${PROJECT_NAME} dolfinx Basix::basix Ginkgo::ginkgo)
+target_link_libraries(${PROJECT_NAME} dolfinx Basix::basix Ginkgo::ginkgo Boost::program_options)
 
 if(amd)
   target_link_libraries(${PROJECT_NAME} roc::rocthrust)
