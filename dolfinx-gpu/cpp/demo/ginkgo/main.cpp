@@ -94,7 +94,7 @@
 #include <thrust/device_vector.h>
 
 using namespace dolfinx;
-using T = PetscScalar;
+using T = double;
 using U = typename dolfinx::scalar_value_t<T>;
 
 // Then follows the definition of the coefficient functions (for $f$ and
@@ -228,9 +228,13 @@ int main(int argc, char* argv[])
 
     // Solve here A.u = b
 
+#if defined(USE_HIP)
+    auto executor = gko::HipExecutor::create(0, gko::OmpExecutor::create());
+#elif defined(USE_CUDA)
     auto executor = gko::CudaExecutor::create(0, gko::OmpExecutor::create());
+#endif
+
     int nnz = A_device.cols().size();
-    int nrows1 = A_device.row_ptr().size();
 
     std::int64_t nrows = b.index_map()->size_local();
     using vec = gko::matrix::Dense<>;
