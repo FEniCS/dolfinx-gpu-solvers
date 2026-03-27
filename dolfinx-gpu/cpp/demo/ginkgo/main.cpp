@@ -298,7 +298,7 @@ int main(int argc, char* argv[])
 
     std::cout << "u.norm [1] = " << dolfinx::la::norm(*u->x()) << "\n";
 
-    dolfinx::common::Timer tsolve1("Set up Ginkgo");
+    dolfinx::common::Timer tsolve1("[Set up Ginkgo]");
 
     std::unique_ptr<gko::LinOp> solver;
 
@@ -338,27 +338,31 @@ int main(int argc, char* argv[])
     for (int i = 0; i < 20; ++i)
     {
       {
-        dolfinx::common::Timer tsolve2("Call solver");
+        dolfinx::common::Timer tsolve2("[Call solver]");
         solver->apply(b_gko, u_gko);
+        executor->synchronize(); // force GPU completion before stopping timer
       }
+      {
+        dolfinx::common::Timer tsolve3("[Update and save]");
 
-      // Copy solution back to CPU
-      thrust::copy(u_device.array().begin(), u_device.array().end(),
-                   u->x()->array().begin());
-      std::cout << "u.norm [after] = " << dolfinx::la::norm(*u->x()) << "\n";
+        // Copy solution back to CPU
+        thrust::copy(u_device.array().begin(), u_device.array().end(),
+                     u->x()->array().begin());
+        std::cout << "u.norm [after] = " << dolfinx::la::norm(*u->x()) << "\n";
 
-      std::ranges::fill(b.array(), 0);
-      fem::assemble_vector(b.array(), L);
-      fem::apply_lifting(b.array(), {a}, {{bc}}, {}, T(1));
-      b.scatter_rev(std::plus<T>());
-      bc.set(b.array(), std::nullopt);
-      std::cout << "b.norm = " << dolfinx::la::norm(b) << "\n";
+        std::ranges::fill(b.array(), 0);
+        fem::assemble_vector(b.array(), L);
+        fem::apply_lifting(b.array(), {a}, {{bc}}, {}, T(1));
+        b.scatter_rev(std::plus<T>());
+        bc.set(b.array(), std::nullopt);
+        std::cout << "b.norm = " << dolfinx::la::norm(b) << "\n";
 
-      // Copy RHS back to device
-      thrust::copy(b.array().begin(), b.array().end(),
-                   b_device.array().begin());
+        // Copy RHS back to device
+        thrust::copy(b.array().begin(), b.array().end(),
+                     b_device.array().begin());
 
-      file.write_function<T>(*u, static_cast<double>(i));
+        file.write_function<T>(*u, static_cast<double>(i));
+      }
     }
 
     dolfinx::list_timings(MPI_COMM_WORLD);

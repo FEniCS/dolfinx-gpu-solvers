@@ -42,7 +42,7 @@ if(CMAKE_HIP_COMPILER_VERSION GREATER_EQUAL 18)
   # https://rocm.docs.amd.com/projects/llvm-project/en/docs-6.2.1/LLVM/clang/html/ReleaseNotes.html#c-specific-potentially-breaking-changes
   set(CMAKE_HIP_FLAGS "${CMAKE_HIP_FLAGS} -fclang-abi-compat=17")
 endif()
-set(CMAKE_HIP_FLAGS "${CMAKE_HIP_FLAGS} -std=c++20 -Wall -O3 -ffast-math -DNDEBUG -munsafe-fp-atomics --gcc-toolchain=/opt/rh/gcc-toolset-13/root/usr/")
+set(CMAKE_HIP_FLAGS "${CMAKE_HIP_FLAGS} -std=c++20 -Wall -O3 -ffast-math -DNDEBUG -munsafe-fp-atomics")
 
 if(DEFINED ENV{CRAYPE_VERSION})
   message("Detected CrayPE - adding MPI flags")
