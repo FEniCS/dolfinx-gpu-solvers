@@ -17,7 +17,7 @@ if(DEFINED ENV{CUDA_ARCH})
 elseif(DEFINED ENV{HIP_ARCH})
   set(amd ON)
 else()
-  error(STATUS "No GPU arch selected. Building for CPU.")
+  message(FATAL_ERROR "No GPU arch selected. Set environment variable CUDA_ARCH or HIP_ARCH.")
 endif()
 
 if(amd)

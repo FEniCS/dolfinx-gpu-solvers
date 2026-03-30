@@ -1,83 +1,6 @@
-// # Poisson equation
-//
-// This demo illustrates how to:
-//
-// * Solve a linear partial differential equation
-// * Create and apply Dirichlet boundary conditions
-// * Define Expressions
-// * Define a FunctionSpace
-//
-// ## Equation and problem definition
-//
-// The Poisson equation is the canonical elliptic partial differential
-// equation.  For a domain $\Omega \subset \mathbb{R}^n$ with boundary
-// $\partial \Omega = \Gamma_{D} \cup \Gamma_{N}$, the Poisson equation
-// with particular boundary conditions reads:
-//
-// \begin{align*}
-//    - \nabla^{2} u &= f \quad {\rm in} \ \Omega, \\
-//      u &= 0 \quad {\rm on} \ \Gamma_{D}, \\
-//      \nabla u \cdot n &= g \quad {\rm on} \ \Gamma_{N}. \\
-// \end{align*}
-//
-// Here, $f$ and $g$ are input data and $n$ denotes the outward directed
-// boundary normal. The most standard variational form of Poisson
-// equation reads: find $u \in V$ such that
-//
-// $$
-//    a(u, v) = L(v) \quad \forall \ v \in V,
-// $$
-// where $V$ is a suitable function space and
-//
-// \begin{align*}
-//    a(u, v) &= \int_{\Omega} \nabla u \cdot \nabla v \, {\rm d} x, \\
-//    L(v)    &= \int_{\Omega} f v \, {\rm d} x
-//    + \int_{\Gamma_{N}} g v \, {\rm d} s.
-// \end{align*}
-//
-// The expression $a(u, v)$ is the bilinear form and $L(v)$ is the
-// linear form. It is assumed that all functions in $V$ satisfy the
-// Dirichlet boundary conditions ($u = 0 \ {\rm on} \ \Gamma_{D}$).
-//
-// In this demo, we shall consider the following definitions of the
-// input functions, the domain, and the boundaries:
-//
-// * $\Omega = [0,1] \times [0,1]$ (a unit square)
-// * $\Gamma_{D} = \{(0, y) \cup (1, y) \subset \partial \Omega\}$
-// (Dirichlet boundary)
-// * $\Gamma_{N} = \{(x, 0) \cup (x, 1) \subset \partial \Omega\}$
-// (Neumann boundary)
-// * $g = \sin(5x)$ (normal derivative)
-// * $f = 10\exp(-((x - 0.5)^2 + (y - 0.5)^2) / 0.02)$ (source term)
-//
-//
-// ## Implementation
-//
-// The implementation is split in two files: a file containing the
-// definition of the variational forms expressed in UFL and a C++ file
-// containing the actual solver.
-//
-// Running this demo requires the files: {download}`demo_poisson/main.cpp`,
-// {download}`demo_poisson/poisson.py` and
-// {download}`demo_poisson/CMakeLists.txt`.
-//
-// ### UFL code
-//
-// The UFL code is implemented in {download}`demo_poisson/poisson.py`.
-// ````{admonition} UFL code implemented in Python
-// :class: dropdown
-// ![ufl-code]
-// ````
-//
-// ### C++ program
-//
-// The main solver is implemented in the
-// {download}`demo_poisson/main.cpp` file.
-//
-// At the top we include the DOLFINx header file and the generated
-// header file "Poisson.h" containing the variational forms for the
-// Poisson equation.  For convenience we also include the DOLFINx
-// namespace.
+// Copyright (C) 2026 Chris Richardson
+// FEniCS Project
+// SPDX: MIT
 
 #include "poisson.h"
 #include <basix/finite-element.h>
@@ -98,17 +21,6 @@ using namespace dolfinx;
 namespace po = boost::program_options;
 using T = double;
 using U = typename dolfinx::scalar_value_t<T>;
-
-// Then follows the definition of the coefficient functions (for $f$ and
-// $g$), which are derived from the {cpp:class}`Expression` class in
-// DOLFINx
-
-// Inside the `main` function, we begin by defining a mesh of the
-// domain. As the unit square is a very standard domain, we can use a
-// built-in mesh provided by the {cpp:class}`UnitSquareMesh` factory. In
-// order to create a mesh consisting of 32 x 32 squares with each square
-// divided into two triangles, and the finite element space (specified
-// in the form file) defined relative to this mesh, we do as follows:
 
 int main(int argc, char* argv[])
 {
