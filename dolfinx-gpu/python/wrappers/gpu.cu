@@ -21,10 +21,15 @@ using nb_device = nb::device::cuda;
 using nb_device = nb::device::rocm;
 #endif
 
+#ifdef HAS_GINKGO
+#include "../../cpp/include/gpu_ginkgo.h"
+#endif
+
 #include <dolfinx/la/MatrixCSR.h>
 #include <dolfinx/la/Vector.h>
 #include <thrust/device_vector.h>
 
+#include <dolfinx_wrappers/la.h>
 #include <dolfinx_wrappers/numpy_dtype.h>
 
 template <typename T>
@@ -112,6 +117,15 @@ void declare_objects(nb::module_& m, const std::string& type)
       .def(nb::init<GPUMatrixCSR&, GPUVector&, GPUVector&>(), nb::arg("A"),
            nb::arg("y"), nb::arg("x"))
       .def("apply", &GPUSpmv::apply);
+
+#ifdef HAS_GINKGO
+  pyclass_solver_name = std::string("Ginkgo_Solver_") + type;
+  using GinkgoSolver = dolfinx::la::cuda::ginkgoSolver<GPUMatrixCSR, GPUVector>;
+  nb::class_<GinkgoSolver>(m, pyclass_solver_name.c_str())
+      .def(nb::init<GPUMatrixCSR&, GPUVector&, GPUVector&, bool>(),
+           nb::arg("A"), nb::arg("b"), nb::arg("u"), nb::arg("LU"))
+      .def("solve", &GinkgoSolver::solve);
+#endif
 }
 
 NB_MODULE(gpucpp, m)

@@ -43,10 +43,14 @@ if(DEFINED ENV{HIP_ARCH})
 endif()
 
 find_package(DOLFINX REQUIRED CONFIG)
+find_package(Ginkgo)
 
-if(DOLFINX_FOUND)
-  message(STATUS "Found DOLFINx at ${DOLFINX_DIR}")
-endif()
+# get_cmake_property(_variableNames VARIABLES)
+# list (SORT _variableNames)
+# foreach (_variableName ${_variableNames})
+#     message(STATUS "${_variableName}=${${_variableName}}")
+# endforeach()
+
 
 # Create the binding library nanobind handles its own calls to
 # target_link_libraries
@@ -72,7 +76,9 @@ if(DEFINED ENV{CUDA_ARCH})
   # CUDA direct solver
   find_package(cudss)
   target_link_libraries(gpucpp PRIVATE cudss)
+  target_link_libraries(gpucpp PRIVATE cusparse)
   target_link_libraries(gpucpp PRIVATE dolfinx)
+  target_link_libraries(gpucpp PRIVATE Ginkgo::ginkgo)
 endif()
 
 if(DEFINED ENV{HIP_ARCH})
@@ -86,22 +92,27 @@ if(DOLFINX_FOUND)
   message(STATUS "Found DOLFINx at ${DOLFINX_DIR}")
 endif()
 
-# Check for petsc4py
+if(Ginkgo_FOUND)
+  message(STATUS "Found Ginkgo at ${Ginkgo_DIR}")
+  target_compile_definitions(gpucpp PRIVATE HAS_GINKGO)
+endif()
+
 execute_process(
   COMMAND ${Python_EXECUTABLE} -c
           "import dolfinx; print(dolfinx.get_include())"
   OUTPUT_VARIABLE DOLFINX_INCLUDE_DIR
   RESULT_VARIABLE DOLFINX_COMMAND_RESULT
-  ERROR_QUIET OUTPUT_STRIP_TRAILING_WHITESPACE
+  OUTPUT_STRIP_TRAILING_WHITESPACE
 )
+
+message(STATUS ${Python_EXECUTABLE})
 
 if(NOT DOLFINX_COMMAND_RESULT)
   message(STATUS "Found dolfinx include directory at ${DOLFINX_INCLUDE_DIR}")
   target_include_directories(gpucpp PRIVATE ${DOLFINX_INCLUDE_DIR})
 else()
-  message(STATUS "dolfinx python headers not found.")
+  message(FATAL_ERROR "*** dolfinx python headers not found. ***")
 endif()
-
 
 set_target_properties(gpucpp PROPERTIES INSTALL_RPATH_USE_LINK_PATH TRUE)
 

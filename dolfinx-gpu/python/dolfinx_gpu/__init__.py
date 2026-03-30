@@ -28,7 +28,8 @@ def _map_type(name: str, dtype: npt.DTypeLike = np.float64):
 
 class GPUVector:
     def __init__(self, x):
-        self._cpp_object = _map_type("Vector", x._cpp_object.dtype)(x._cpp_object)
+        mt = _map_type("Vector", x._cpp_object.dtype)
+        self._cpp_object = mt(x._cpp_object)
 
     @property
     def index_map(self) -> IndexMap:
@@ -78,7 +79,7 @@ class GPUMatrixCSR:
 
 class GPUSolver:
     def __init__(self, A, b, u):
-        self._cpp_object = _map_type("Solver", A._cpp_object.dtype)(A._cpp_object, b._cpp_object, u._cpp_object)
+        self._cpp_object = _map_type("Solver", A._cpp_object.data.dtype)(A._cpp_object, b._cpp_object, u._cpp_object)
 
     def analyze(self):
         self._cpp_object.analyze()
@@ -92,7 +93,7 @@ class GPUSolver:
 
 class GPUSPMV:
     def __init__(self, A, b, u):
-        self._cpp_object = _map_type("SPMV", A._cpp_object.dtype)(A._cpp_object, b._cpp_object, u._cpp_object)
+        self._cpp_object = _map_type("SPMV", A._cpp_object.data.dtype)(A._cpp_object, b._cpp_object, u._cpp_object)
 
     def apply(self):
         self._cpp_object.apply()
