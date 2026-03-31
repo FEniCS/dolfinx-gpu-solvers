@@ -78,7 +78,7 @@ spmv = GPUSPMV(A1, u1, b1)
 spmv.apply()
 
 GT1 = dolfinx.common.Timer("Setup using Ginkgo")
-Ginkgo_Solver = gpucpp.Ginkgo_Solver_float32(A1._cpp_object, u1._cpp_object, b1._cpp_object)
+Ginkgo_Solver = gpucpp.Ginkgo_Solver_float32(A1._cpp_object, u1._cpp_object, b1._cpp_object, False)
 del(GT1)
 GT2 = dolfinx.common.Timer("Solve using Ginkgo")
 Ginkgo_Solver.solve()
