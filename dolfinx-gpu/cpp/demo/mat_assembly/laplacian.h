@@ -30,16 +30,13 @@ __global__ void laplacian_matinsert(
   if (blockDim.x != ndofs or blockDim.y != ndofs)
   {
     printf("Incorrect blockDim\n");
-    abort();
   }
 
   if (gridDim.x != ncells)
   {
     printf("Incorrect gridDim.x\n");
-    abort();
   }
-  if (blockIdx.x >= ncells)
-    abort();
+  assert(blockIdx.x >= ncells);
 
   int cell_id = cells[blockIdx.x];
 
