@@ -1,86 +1,10 @@
-// # Poisson equation
-//
-// This demo illustrates how to:
-//
-// * Solve a linear partial differential equation
-// * Create and apply Dirichlet boundary conditions
-// * Define Expressions
-// * Define a FunctionSpace
-//
-// ## Equation and problem definition
-//
-// The Poisson equation is the canonical elliptic partial differential
-// equation.  For a domain $\Omega \subset \mathbb{R}^n$ with boundary
-// $\partial \Omega = \Gamma_{D} \cup \Gamma_{N}$, the Poisson equation
-// with particular boundary conditions reads:
-//
-// \begin{align*}
-//    - \nabla^{2} u &= f \quad {\rm in} \ \Omega, \\
-//      u &= 0 \quad {\rm on} \ \Gamma_{D}, \\
-//      \nabla u \cdot n &= g \quad {\rm on} \ \Gamma_{N}. \\
-// \end{align*}
-//
-// Here, $f$ and $g$ are input data and $n$ denotes the outward directed
-// boundary normal. The most standard variational form of Poisson
-// equation reads: find $u \in V$ such that
-//
-// $$
-//    a(u, v) = L(v) \quad \forall \ v \in V,
-// $$
-// where $V$ is a suitable function space and
-//
-// \begin{align*}
-//    a(u, v) &= \int_{\Omega} \nabla u \cdot \nabla v \, {\rm d} x, \\
-//    L(v)    &= \int_{\Omega} f v \, {\rm d} x
-//    + \int_{\Gamma_{N}} g v \, {\rm d} s.
-// \end{align*}
-//
-// The expression $a(u, v)$ is the bilinear form and $L(v)$ is the
-// linear form. It is assumed that all functions in $V$ satisfy the
-// Dirichlet boundary conditions ($u = 0 \ {\rm on} \ \Gamma_{D}$).
-//
-// In this demo, we shall consider the following definitions of the
-// input functions, the domain, and the boundaries:
-//
-// * $\Omega = [0,1] \times [0,1]$ (a unit square)
-// * $\Gamma_{D} = \{(0, y) \cup (1, y) \subset \partial \Omega\}$
-// (Dirichlet boundary)
-// * $\Gamma_{N} = \{(x, 0) \cup (x, 1) \subset \partial \Omega\}$
-// (Neumann boundary)
-// * $g = \sin(5x)$ (normal derivative)
-// * $f = 10\exp(-((x - 0.5)^2 + (y - 0.5)^2) / 0.02)$ (source term)
-//
-//
-// ## Implementation
-//
-// The implementation is split in two files: a file containing the
-// definition of the variational forms expressed in UFL and a C++ file
-// containing the actual solver.
-//
-// Running this demo requires the files: {download}`demo_poisson/main.cpp`,
-// {download}`demo_poisson/poisson.py` and
-// {download}`demo_poisson/CMakeLists.txt`.
-//
-// ### UFL code
-//
-// The UFL code is implemented in {download}`demo_poisson/poisson.py`.
-// ````{admonition} UFL code implemented in Python
-// :class: dropdown
-// ![ufl-code]
-// ````
-//
-// ### C++ program
-//
-// The main solver is implemented in the
-// {download}`demo_poisson/main.cpp` file.
-//
-// At the top we include the DOLFINx header file and the generated
-// header file "Poisson.h" containing the variational forms for the
-// Poisson equation.  For convenience we also include the DOLFINx
-// namespace.
+// Copyright (C) 2026 Chris Richardson
+// FEniCS Project
+// SPDX: MIT
 
 #include "poisson.h"
 #include <basix/finite-element.h>
+#include <boost/program_options.hpp>
 #include <cmath>
 #include <dolfinx.h>
 #include <dolfinx/fem/Constant.h>
@@ -94,30 +18,49 @@
 #include <thrust/device_vector.h>
 
 using namespace dolfinx;
-using T = PetscScalar;
+namespace po = boost::program_options;
+using T = double;
 using U = typename dolfinx::scalar_value_t<T>;
-
-// Then follows the definition of the coefficient functions (for $f$ and
-// $g$), which are derived from the {cpp:class}`Expression` class in
-// DOLFINx
-
-// Inside the `main` function, we begin by defining a mesh of the
-// domain. As the unit square is a very standard domain, we can use a
-// built-in mesh provided by the {cpp:class}`UnitSquareMesh` factory. In
-// order to create a mesh consisting of 32 x 32 squares with each square
-// divided into two triangles, and the finite element space (specified
-// in the form file) defined relative to this mesh, we do as follows:
 
 int main(int argc, char* argv[])
 {
   MPI_Init(&argc, &argv);
   dolfinx::init_logging(argc, argv);
 
+  // Define command line options
+  po::options_description desc("Options");
+  desc.add_options()("help,h", "Print usage message")(
+      "direct", po::value<bool>()->default_value(false),
+      "Compute platform (cpu or gpu)");
+
+  // Parse command line options
+  po::variables_map vm;
+  po::store(po::command_line_parser(argc, argv)
+                .options(desc)
+                .allow_unregistered()
+                .run(),
+            vm);
+
+  po::notify(vm);
+
+  if (vm.count("help"))
+  {
+    std::cout << "DOLFINx Ginkgo demo\n-----------------\n";
+    std::cout << desc << std::endl;
+    return 0;
+  }
+  bool direct_solver = vm["direct"].as<bool>();
+
+  if (direct_solver)
+    std::cout << "Direct solver (LU)\n";
+  else
+    std::cout << "Iterative solver (CG)\n";
+
   {
     // Create mesh and function space
     auto part = mesh::create_cell_partitioner(mesh::GhostMode::shared_facet);
     auto mesh = std::make_shared<mesh::Mesh<U>>(mesh::create_box<U>(
-        MPI_COMM_WORLD, {{{0.0, 0.0, 0.0}, {1.0, 1.0, 1.0}}}, {10, 10, 10},
+        MPI_COMM_WORLD, {{{0.0, 0.0, 0.0}, {1.0, 1.0, 1.0}}}, {20, 20, 20},
         mesh::CellType::tetrahedron, part));
 
     auto element = basix::create_element<U>(
@@ -228,9 +171,13 @@ int main(int argc, char* argv[])
 
     // Solve here A.u = b
 
+#if defined(USE_HIP)
+    auto executor = gko::HipExecutor::create(0, gko::OmpExecutor::create());
+#elif defined(USE_CUDA)
     auto executor = gko::CudaExecutor::create(0, gko::OmpExecutor::create());
+#endif
+
     int nnz = A_device.cols().size();
-    int nrows1 = A_device.row_ptr().size();
 
     std::int64_t nrows = b.index_map()->size_local();
     using vec = gko::matrix::Dense<>;
@@ -263,21 +210,36 @@ int main(int argc, char* argv[])
 
     std::cout << "u.norm [1] = " << dolfinx::la::norm(*u->x()) << "\n";
 
-    dolfinx::common::Timer tsolve1("Set up Ginkgo");
+    dolfinx::common::Timer tsolve1("[Set up Ginkgo]");
 
-    using cg = gko::solver::Cg<T>;
-    using bj = gko::preconditioner::Jacobi<T, std::int32_t>;
-    const gko::remove_complex<T> reduction_factor = 1e-7;
-    auto solver
-        = cg::build()
-              .with_criteria(
-                  gko::stop::Iteration::build().with_max_iters(100),
-                  gko::stop::ResidualNorm<T>::build().with_reduction_factor(
-                      reduction_factor))
-              .with_preconditioner(bj::build())
-              .on(executor)
-              ->generate(
-                  clone(executor, mat)); // copy the matrix to the executor
+    std::unique_ptr<gko::LinOp> solver;
+
+    if (direct_solver)
+    {
+      auto solver_factory
+          = gko::experimental::solver::Direct<double, int>::build()
+                .with_factorization(
+                    gko::experimental::factorization::Lu<double, int>::build()
+                        .on(executor))
+                .on(executor);
+
+      solver = solver_factory->generate(gko::share(std::move(mat)));
+    }
+    else
+    {
+      using cg = gko::solver::Cg<T>;
+      using bj = gko::preconditioner::Jacobi<T, std::int32_t>;
+      const gko::remove_complex<T> reduction_factor = 1e-7;
+      solver
+          = cg::build()
+                .with_criteria(
+                    gko::stop::Iteration::build().with_max_iters(100),
+                    gko::stop::ResidualNorm<T>::build().with_reduction_factor(
+                        reduction_factor))
+                .with_preconditioner(bj::build())
+                .on(executor)
+                ->generate(gko::share(std::move(mat)));
+    }
 
     tsolve1.stop();
     tsolve1.flush();
@@ -287,30 +249,32 @@ int main(int argc, char* argv[])
 
     for (int i = 0; i < 20; ++i)
     {
+      {
+        dolfinx::common::Timer tsolve2("[Call solver]");
+        solver->apply(b_gko, u_gko);
+        executor->synchronize(); // force GPU completion before stopping timer
+      }
+      {
+        dolfinx::common::Timer tsolve3("[Update and save]");
 
-      dolfinx::common::Timer tsolve2("Tsolve2");
-      solver->apply(b_gko, u_gko);
+        // Copy solution back to CPU
+        thrust::copy(u_device.array().begin(), u_device.array().end(),
+                     u->x()->array().begin());
+        std::cout << "u.norm [after] = " << dolfinx::la::norm(*u->x()) << "\n";
 
-      // Copy solution back to CPU
-      thrust::copy(u_device.array().begin(), u_device.array().end(),
-                   u->x()->array().begin());
-      std::cout << "u.norm [after] = " << dolfinx::la::norm(*u->x()) << "\n";
+        std::ranges::fill(b.array(), 0);
+        fem::assemble_vector(b.array(), L);
+        fem::apply_lifting(b.array(), {a}, {{bc}}, {}, T(1));
+        b.scatter_rev(std::plus<T>());
+        bc.set(b.array(), std::nullopt);
+        std::cout << "b.norm = " << dolfinx::la::norm(b) << "\n";
 
-      std::ranges::fill(b.array(), 0);
-      fem::assemble_vector(b.array(), L);
-      fem::apply_lifting(b.array(), {a}, {{bc}}, {}, T(1));
-      b.scatter_rev(std::plus<T>());
-      bc.set(b.array(), std::nullopt);
-      std::cout << "b.norm = " << dolfinx::la::norm(b) << "\n";
+        // Copy RHS back to device
+        thrust::copy(b.array().begin(), b.array().end(),
+                     b_device.array().begin());
 
-      // Copy RHS back to device
-      thrust::copy(b.array().begin(), b.array().end(),
-                   b_device.array().begin());
-
-      //   // Update ghost values before output
-      //   // u->x()->scatter_fwd();
-
-      file.write_function<T>(*u, static_cast<double>(i));
+        file.write_function<T>(*u, static_cast<double>(i));
+      }
     }
 
     dolfinx::list_timings(MPI_COMM_WORLD);
