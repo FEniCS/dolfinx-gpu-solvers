@@ -30,8 +30,9 @@ int main(int argc, char* argv[])
   // Define command line options
   po::options_description desc("Options");
   desc.add_options()("help,h", "Print usage message")(
-      "direct", po::value<bool>()->default_value(false),
-      "Compute platform (cpu or gpu)");
+      "solver", po::value<std::string>()->default_value("AMG"),
+      "Solver type (AMG, LU or BJ)")(
+      "n", po::value<std::int32_t>()->default_value(20), "Mesh size");
 
   // Parse command line options
   po::variables_map vm;
@@ -49,18 +50,17 @@ int main(int argc, char* argv[])
     std::cout << desc << std::endl;
     return 0;
   }
-  bool direct_solver = vm["direct"].as<bool>();
+  std::string solver_type = vm["solver"].as<std::string>();
+  std::int32_t n = vm["n"].as<std::int32_t>();
 
-  if (direct_solver)
-    std::cout << "Direct solver (LU)\n";
-  else
-    std::cout << "Iterative solver (CG)\n";
+  std::cout << "Mesh = " << n << " cube.\n";
+  std::cout << "Solver = " << solver_type << "\n";
 
   {
     // Create mesh and function space
     auto part = mesh::create_cell_partitioner(mesh::GhostMode::shared_facet);
     auto mesh = std::make_shared<mesh::Mesh<U>>(mesh::create_box<U>(
-        MPI_COMM_WORLD, {{{0.0, 0.0, 0.0}, {1.0, 1.0, 1.0}}}, {20, 20, 20},
+        MPI_COMM_WORLD, {{{0.0, 0.0, 0.0}, {1.0, 1.0, 1.0}}}, {n, n, n},
         mesh::CellType::tetrahedron, part));
 
     auto element = basix::create_element<U>(
@@ -211,10 +211,9 @@ int main(int argc, char* argv[])
     std::cout << "u.norm [1] = " << dolfinx::la::norm(*u->x()) << "\n";
 
     dolfinx::common::Timer tsolve1("[Set up Ginkgo]");
-
     std::unique_ptr<gko::LinOp> solver;
 
-    if (direct_solver)
+    if (solver_type == "LU")
     {
       auto solver_factory
           = gko::experimental::solver::Direct<double, int>::build()
@@ -225,10 +224,50 @@ int main(int argc, char* argv[])
 
       solver = solver_factory->generate(gko::share(std::move(mat)));
     }
-    else
+    else if (solver_type == "AMG")
+    {
+      using cg = gko::solver::Cg<T>;
+      using mg = gko::solver::Multigrid;
+      using pgm = gko::multigrid::Pgm<T, std::int32_t>;
+      using ir = gko::solver::Ir<T>;
+      using jacobi = gko::preconditioner::Jacobi<T, std::int32_t>;
+
+      auto smoother_factory = gko::share(
+          ir::build()
+              .with_solver(jacobi::build().with_max_block_size(1u).on(executor))
+              .with_relaxation_factor(T{0.9})
+              .with_criteria(
+                  gko::stop::Iteration::build().with_max_iters(2u).on(executor))
+              .on(executor));
+
+      auto amg_factory = gko::share(
+          mg::build()
+              .with_max_levels(10u)
+              .with_min_coarse_rows(32u)
+              .with_pre_smoother(smoother_factory)
+              .with_post_smoother(smoother_factory)
+              .with_mg_level(gko::share(
+                  pgm::build().with_deterministic(true).on(executor)))
+              .with_criteria(
+                  gko::stop::Iteration::build().with_max_iters(1u).on(executor))
+              .on(executor));
+
+      const gko::remove_complex<T> reduction_factor = 1e-7;
+      solver
+          = cg::build()
+                .with_criteria(
+                    gko::stop::Iteration::build().with_max_iters(100),
+                    gko::stop::ResidualNorm<T>::build().with_reduction_factor(
+                        reduction_factor))
+                .with_preconditioner(amg_factory)
+                .on(executor)
+                ->generate(gko::share(std::move(mat)));
+    }
+    else if (solver_type == "BJ")
     {
       using cg = gko::solver::Cg<T>;
       using bj = gko::preconditioner::Jacobi<T, std::int32_t>;
+
       const gko::remove_complex<T> reduction_factor = 1e-7;
       solver
           = cg::build()
