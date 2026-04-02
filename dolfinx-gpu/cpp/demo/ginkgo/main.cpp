@@ -233,38 +233,41 @@ int main(int argc, char* argv[])
       using mg = gko::solver::Multigrid;
       using pgm = gko::multigrid::Pgm<T, std::int32_t>;
       using ir = gko::solver::Ir<T>;
-      using jacobi = gko::preconditioner::Jacobi<T, std::int32_t>;
+      using bj = gko::preconditioner::Jacobi<T, std::int32_t>;
+      using schwarz
+          = dist::preconditioner::Schwarz<T, std::int32_t, std::int64_t>;
 
-      auto smoother_factory = gko::share(
+      auto smoother = gko::share(
           ir::build()
-              .with_solver(jacobi::build().with_max_block_size(1u).on(executor))
-              .with_relaxation_factor(T{0.9})
+              .with_solver(bj::build().with_max_block_size(1u).on(executor))
               .with_criteria(
-                  gko::stop::Iteration::build().with_max_iters(2u).on(executor))
+                  gko::stop::Iteration::build().with_max_iters(1u).on(executor))
               .on(executor));
 
       auto amg_factory = gko::share(
           mg::build()
               .with_max_levels(10u)
               .with_min_coarse_rows(32u)
-              .with_pre_smoother(smoother_factory)
-              .with_post_smoother(smoother_factory)
+              .with_pre_smoother(smoother)
+              .with_post_smoother(smoother)
               .with_mg_level(gko::share(
                   pgm::build().with_deterministic(true).on(executor)))
               .with_criteria(
                   gko::stop::Iteration::build().with_max_iters(1u).on(executor))
               .on(executor));
 
-      const gko::remove_complex<T> reduction_factor = 1e-7;
-      solver
-          = cg::build()
-                .with_criteria(
-                    gko::stop::Iteration::build().with_max_iters(100),
-                    gko::stop::ResidualNorm<T>::build().with_reduction_factor(
-                        reduction_factor))
-                .with_preconditioner(amg_factory)
-                .on(executor)
-                ->generate(gko::share(std::move(mat)));
+      solver = cg::build()
+                   .with_criteria(
+                       gko::stop::Iteration::build().with_max_iters(1000u).on(
+                           executor),
+                       gko::stop::ResidualNorm<T>::build()
+                           .with_reduction_factor(T{1e-7})
+                           .on(executor))
+                   .with_preconditioner(schwarz::build()
+                                            .with_local_solver(amg_factory)
+                                            .on(executor))
+                   .on(executor)
+                   ->generate(gko::share(std::move(mat)));
     }
     else if (solver_type == "BJ")
     {
@@ -272,17 +275,6 @@ int main(int argc, char* argv[])
       using bj = gko::preconditioner::Jacobi<T, std::int32_t>;
       using schwarz
           = dist::preconditioner::Schwarz<T, std::int32_t, std::int64_t>;
-
-      // const gko::remove_complex<T> reduction_factor = 1e-7;
-      // solver
-      //     = cg::build()
-      //           .with_criteria(
-      //               gko::stop::Iteration::build().with_max_iters(100),
-      //               gko::stop::ResidualNorm<T>::build().with_reduction_factor(
-      //                   reduction_factor))
-      //           .with_preconditioner(bj::build())
-      //           .on(executor)
-      //           ->generate(gko::share(std::move(mat)));
 
       solver = cg::build()
                    .with_criteria(
