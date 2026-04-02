@@ -17,6 +17,8 @@
 #include <ginkgo/ginkgo.hpp>
 #include <thrust/device_vector.h>
 
+#include <ginkgo/core/distributed/partition.hpp>
+
 using namespace dolfinx;
 namespace po = boost::program_options;
 using T = double;
@@ -88,17 +90,6 @@ int main(int argc, char* argv[])
     fem::Form<T> L
         = fem::create_form<T>(*form_poisson_L, {V}, {{"f", u}}, {}, {}, {});
 
-    //  Now, the Dirichlet boundary condition ($u = 0$) can be created
-    //  using the class {cpp:class}`DirichletBC`. A
-    //  {cpp:class}`DirichletBC` takes two arguments: the value of the
-    //  boundary condition, and the part of the boundary on which the
-    //  condition applies. In our example, the value of the boundary
-    //  condition (0) can represented using a {cpp:class}`Function`,
-    //  and the Dirichlet boundary is defined by the indices of degrees
-    //  of freedom to which the boundary condition applies. The
-    //  definition of the Dirichlet boundary condition then looks as
-    //  follows:
-
     // Define boundary condition
 
     std::vector facets = mesh::locate_entities_boundary(
@@ -136,13 +127,6 @@ int main(int argc, char* argv[])
 
     std::cout << "u.norm [init] = " << dolfinx::la::norm(*u->x()) << "\n";
 
-    //  Now, we have specified the variational forms and can consider
-    //  the solution of the variational problem. First, we need to
-    //  define a {cpp:class}`Function` `u` to store the solution. (Upon
-    //  initialization, it is simply set to the zero function.) Next, we
-    //  can call the `solve` function with the arguments `a == L`, `u`
-    //  and `bc` as follows:
-
     la::SparsityPattern sp = fem::create_sparsity_pattern(a);
     sp.finalize();
     la::MatrixCSR<T> A(sp);
@@ -153,11 +137,6 @@ int main(int argc, char* argv[])
     A.scatter_rev();
     fem::set_diagonal<T>(A.mat_set_values(), *V, {bc});
 
-    la::MatrixCSR<T, thrust::device_vector<T>,
-                  thrust::device_vector<std::int32_t>,
-                  thrust::device_vector<std::int32_t>>
-        A_device(A);
-
     std::ranges::fill(b.array(), 0);
     fem::assemble_vector(b.array(), L);
     fem::apply_lifting(b.array(), {a}, {{bc}}, {}, T(1));
@@ -165,50 +144,74 @@ int main(int argc, char* argv[])
     bc.set(b.array(), std::nullopt);
     std::cout << "b.norm = " << dolfinx::la::norm(b) << "\n";
 
-    // Copy RHS to device
-    la::Vector<T, thrust::device_vector<T>> b_device(b);
-    la::Vector<T, thrust::device_vector<T>> u_device(*(u->x()));
-
     // Solve here A.u = b
+    const auto comm = gko::experimental::mpi::communicator(mesh->comm());
+    int rank = comm.rank();
+    int nranks = comm.size();
+    std::cout << "Rank = " << rank << "/" << nranks << "\n";
 
 #if defined(USE_HIP)
-    auto executor = gko::HipExecutor::create(0, gko::OmpExecutor::create());
+    auto executor = gko::HipExecutor::create(
+        rank % gko::HipExecutor::get_num_devices(), gko::OmpExecutor::create());
 #elif defined(USE_CUDA)
-    auto executor = gko::CudaExecutor::create(0, gko::OmpExecutor::create());
+    auto executor
+        = gko::CudaExecutor::create(rank % gko::CudaExecutor::get_num_devices(),
+                                    gko::OmpExecutor::create());
 #endif
 
-    int nnz = A_device.cols().size();
+    namespace dist = gko::experimental::distributed;
 
-    std::int64_t nrows = b.index_map()->size_local();
-    using vec = gko::matrix::Dense<>;
-    using val_array = gko::array<T>;
+    auto index_map = b.index_map();
+    std::int64_t local_size = index_map->size_local();
+    auto [global_start, global_end] = index_map->local_range();
 
-    auto b_gko = vec::create(
-        executor, gko::dim<2>(nrows, 1),
-        val_array::view(executor, nrows, b_device.array().data().get()), 1);
+    auto partition = gko::share(
+        dist::build_partition_from_local_size<std::int32_t, std::int64_t>(
+            executor, comm, local_size));
 
-    auto u_gko = vec::create(
-        executor, gko::dim<2>(nrows, 1),
-        val_array::view(executor, nrows, u_device.array().data().get()), 1);
+    gko::size_type nrglobal = index_map->size_global();
+    gko::matrix_data<T, std::int64_t> local_data;
+    local_data.size = {nrglobal, nrglobal};
 
-    using mtx = gko::matrix::Csr<>;
-    auto mat = mtx::create(executor, gko::dim<2>(nrows), nnz);
-    mtx::value_type* values = mat->get_values();
-    mtx::index_type* row_ptr = mat->get_row_ptrs();
-    mtx::index_type* col_idx = mat->get_col_idxs();
+    // Convert all column indices to global
+    const auto& cols_local = A.cols();
+    const auto& row_ptr = A.row_ptr();
+    const auto& vals = A.values();
 
-    thrust::copy(A_device.values().begin(), A_device.values().end(), values);
-    thrust::copy(A_device.cols().begin(), A_device.cols().end(), col_idx);
-    thrust::copy(A_device.row_ptr().begin(), A_device.row_ptr().end(), row_ptr);
+    std::vector<std::int64_t> cols_global(cols_local.size());
+    A.index_map(1)->local_to_global(cols_local, cols_global);
 
-    std::cout << "mat contains " << mat->get_num_stored_elements() << "\n";
+    for (std::int64_t i = 0; i < local_size; ++i)
+    {
+      for (auto j = row_ptr[i]; j < row_ptr[i + 1]; ++j)
+      {
+        local_data.nonzeros.emplace_back(global_start + i, cols_global[j],
+                                         vals[j]);
+      }
+    }
+    local_data.sort_row_major();
+
+    auto mat = gko::share(
+        dist::Matrix<T, std::int32_t, std::int64_t>::create(executor, comm));
+    mat->read_distributed(local_data, partition);
+
+    std::cout << "Distributed matrix: " << mat->get_size()[0] << " x "
+              << mat->get_size()[1] << "\n";
+
+    auto b_gko = dist::Vector<T>::create(
+        executor, comm, gko::dim<2>(index_map->size_global(), 1),
+        gko::dim<2>(index_map->size_local(), 1));
+
+    auto u_gko = dist::Vector<T>::create(
+        executor, comm, gko::dim<2>(index_map->size_global(), 1),
+        gko::dim<2>(index_map->size_local(), 1));
+
+    u_gko->fill(0.0);
+
+    thrust::copy(b.array().begin(), b.array().begin() + local_size,
+                 b_gko->get_local_values());
 
     std::cout << "u.norm [0] = " << dolfinx::la::norm(*u->x()) << "\n";
-    mat->apply(b_gko, u_gko);
-
-    spdlog::info("Pointer to u_gko at {}", (std::size_t)(u_gko->get_values()));
-
-    std::cout << "u.norm [1] = " << dolfinx::la::norm(*u->x()) << "\n";
 
     dolfinx::common::Timer tsolve1("[Set up Ginkgo]");
     std::unique_ptr<gko::LinOp> solver;
@@ -267,17 +270,34 @@ int main(int argc, char* argv[])
     {
       using cg = gko::solver::Cg<T>;
       using bj = gko::preconditioner::Jacobi<T, std::int32_t>;
+      using schwarz
+          = dist::preconditioner::Schwarz<T, std::int32_t, std::int64_t>;
 
-      const gko::remove_complex<T> reduction_factor = 1e-7;
-      solver
-          = cg::build()
-                .with_criteria(
-                    gko::stop::Iteration::build().with_max_iters(100),
-                    gko::stop::ResidualNorm<T>::build().with_reduction_factor(
-                        reduction_factor))
-                .with_preconditioner(bj::build())
-                .on(executor)
-                ->generate(gko::share(std::move(mat)));
+      // const gko::remove_complex<T> reduction_factor = 1e-7;
+      // solver
+      //     = cg::build()
+      //           .with_criteria(
+      //               gko::stop::Iteration::build().with_max_iters(100),
+      //               gko::stop::ResidualNorm<T>::build().with_reduction_factor(
+      //                   reduction_factor))
+      //           .with_preconditioner(bj::build())
+      //           .on(executor)
+      //           ->generate(gko::share(std::move(mat)));
+
+      solver = cg::build()
+                   .with_criteria(
+                       gko::stop::Iteration::build().with_max_iters(1000u).on(
+                           executor),
+                       gko::stop::ResidualNorm<T>::build()
+                           .with_reduction_factor(T{1e-7})
+                           .on(executor))
+                   .with_preconditioner(
+                       schwarz::build()
+                           .with_local_solver(
+                               bj::build().with_max_block_size(1u).on(executor))
+                           .on(executor))
+                   .on(executor)
+                   ->generate(mat);
     }
 
     tsolve1.stop();
@@ -297,9 +317,12 @@ int main(int argc, char* argv[])
         dolfinx::common::Timer tsolve3("[Update and save]");
 
         // Copy solution back to CPU
-        thrust::copy(u_device.array().begin(), u_device.array().end(),
+        thrust::copy(u_gko->get_local_values(),
+                     u_gko->get_local_values() + local_size,
                      u->x()->array().begin());
         std::cout << "u.norm [after] = " << dolfinx::la::norm(*u->x()) << "\n";
+
+        u->x()->scatter_fwd();
 
         std::ranges::fill(b.array(), 0);
         fem::assemble_vector(b.array(), L);
@@ -310,7 +333,7 @@ int main(int argc, char* argv[])
 
         // Copy RHS back to device
         thrust::copy(b.array().begin(), b.array().end(),
-                     b_device.array().begin());
+                     b_gko->get_local_values());
 
         file.write_function<T>(*u, static_cast<double>(i));
       }
