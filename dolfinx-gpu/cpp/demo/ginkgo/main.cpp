@@ -151,12 +151,9 @@ int main(int argc, char* argv[])
     std::cout << "Rank = " << rank << "/" << nranks << "\n";
 
 #if defined(USE_HIP)
-    auto executor = gko::HipExecutor::create(
-        rank % gko::HipExecutor::get_num_devices(), gko::OmpExecutor::create());
+    auto executor = gko::HipExecutor::create(0, gko::OmpExecutor::create());
 #elif defined(USE_CUDA)
-    auto executor
-        = gko::CudaExecutor::create(rank % gko::CudaExecutor::get_num_devices(),
-                                    gko::OmpExecutor::create());
+    auto executor = gko::CudaExecutor::create(0, gko::OmpExecutor::create());
 #endif
 
     namespace dist = gko::experimental::distributed;
@@ -289,7 +286,7 @@ int main(int argc, char* argv[])
                                bj::build().with_max_block_size(1u).on(executor))
                            .on(executor))
                    .on(executor)
-                   ->generate(mat);
+                   ->generate(gko::share(std::move(mat)));
     }
 
     tsolve1.stop();
@@ -324,7 +321,7 @@ int main(int argc, char* argv[])
         std::cout << "b.norm = " << dolfinx::la::norm(b) << "\n";
 
         // Copy RHS back to device
-        thrust::copy(b.array().begin(), b.array().end(),
+        thrust::copy(b.array().begin(), b.array().begin() + local_size,
                      b_gko->get_local_values());
 
         file.write_function<T>(*u, static_cast<double>(i));
