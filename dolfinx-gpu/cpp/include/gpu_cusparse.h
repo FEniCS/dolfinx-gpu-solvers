@@ -78,7 +78,8 @@ cusparseMatVec<MatType, VecType>::cusparseMatVec(MatType& A_device,
   else
     throw std::runtime_error("Value type not supported");
 
-  cusparseCreate(&handle);
+  cusparseStatus_t status = cusparseCreate(&handle);
+  assert(status == CUSPARSE_STATUS_SUCCESS);
 
   int nnz = A_device.values().size();
   assert(A_device.values().size() == A_device.cols().size());
@@ -87,7 +88,7 @@ cusparseMatVec<MatType, VecType>::cusparseMatVec(MatType& A_device,
   assert(nrows == y_device.array().size());
   int ncols = x_device.array().size();
 
-  cusparseStatus_t status = cusparseCreateCsr(
+  status = cusparseCreateCsr(
       &matA, nrows, ncols, nnz, (void*)A_device.row_ptr().data().get(),
       (void*)A_device.cols().data().get(),
       (void*)A_device.values().data().get(), CUSPARSE_INDEX_32I,

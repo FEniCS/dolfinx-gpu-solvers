@@ -1,3 +1,8 @@
+// Copyright (C) 2025 Chris Richardson
+//
+// This file is part of DOLFINx (https://www.fenicsproject.org)
+//
+// SPDX-License-Identifier:    MIT
 
 #pragma once
 
@@ -36,7 +41,7 @@ __global__ void laplacian_matinsert(
   {
     printf("Incorrect gridDim.x\n");
   }
-  assert(blockIdx.x >= ncells);
+  assert(blockIdx.x < ncells);
 
   int cell_id = cells[blockIdx.x];
 

@@ -78,7 +78,8 @@ hipsparseMatVec<MatType, VecType>::hipsparseMatVec(MatType& A_device,
   else
     throw std::runtime_error("Value type not supported");
 
-  hipsparseCreate(&handle);
+  hipsparseStatus_t status = hipsparseCreate(&handle);
+  assert(status == HIPSPARSE_STATUS_SUCCESS);
 
   int nnz = A_device.values().size();
   assert(A_device.values().size() == A_device.cols().size());
@@ -87,7 +88,7 @@ hipsparseMatVec<MatType, VecType>::hipsparseMatVec(MatType& A_device,
   assert(nrows == y_device.array().size());
   int ncols = x_device.array().size();
 
-  hipsparseStatus_t status = hipsparseCreateCsr(
+  status = hipsparseCreateCsr(
       &matA, nrows, ncols, nnz, (void*)A_device.row_ptr().data().get(),
       (void*)A_device.cols().data().get(),
       (void*)A_device.values().data().get(), HIPSPARSE_INDEX_32I,
