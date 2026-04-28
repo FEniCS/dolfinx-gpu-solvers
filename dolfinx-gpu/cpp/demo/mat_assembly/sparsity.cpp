@@ -77,5 +77,6 @@ create_sparsity(const GPUDofMap<thrust::device_vector<std::int32_t>>& dm)
 
   std::shared_ptr<const dolfinx::common::IndexMap> im0 = dm.index_map();
   std::shared_ptr<const dolfinx::common::IndexMap> im1 = dm.index_map();
-  return GPUSparsityPattern(reduced_cols, row_ptr, {im0, im1});
+  return GPUSparsityPattern(std::move(reduced_cols), std::move(row_ptr),
+                            {im0, im1});
 }
