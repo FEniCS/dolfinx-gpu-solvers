@@ -31,7 +31,7 @@ int main(int argc, char* argv[])
   po::options_description desc("Options");
   desc.add_options()("help,h", "Print usage message")(
       "direct", po::value<bool>()->default_value(false),
-      "Compute platform (cpu or gpu)");
+      "Use direct solver (or otherwise iterative)");
 
   // Parse command line options
   po::variables_map vm;

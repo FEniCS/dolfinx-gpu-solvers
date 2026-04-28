@@ -11,6 +11,16 @@
 #include <cstdio>
 #include <dolfinx/la/MatrixCSR.h>
 
+#define GPU_ASSERT(condition, msg)                                             \
+  do                                                                           \
+  {                                                                            \
+    if (!(condition))                                                          \
+    {                                                                          \
+      printf("GPU error: %s (%s:%d)\n", msg, __FILE__, __LINE__);              \
+      __trap();                                                                \
+    }                                                                          \
+  } while (0)
+
 namespace detail
 {
 /// @brief Assemble element matrix for Laplacian operator into global tensor
@@ -32,16 +42,9 @@ __global__ void laplacian_matinsert(
     const T* __restrict__ G_entity, const std::int32_t* __restrict__ cell_dofs,
     const int* __restrict__ cells, int ncells, int nq, int ndofs)
 {
-  if (blockDim.x != ndofs or blockDim.y != ndofs)
-  {
-    printf("Incorrect blockDim\n");
-  }
-
-  if (gridDim.x != ncells)
-  {
-    printf("Incorrect gridDim.x\n");
-  }
-  assert(blockIdx.x < ncells);
+  GPU_ASSERT(blockDim.x == ndofs and blockDim.y == ndofs, "Incorrect blockDim");
+  GPU_ASSERT(gridDim.x == ncells, "Incorrect gridDim.x");
+  GPU_ASSERT(blockIdx.x < ncells, "blockIdx.x outside cell range");
 
   int cell_id = cells[blockIdx.x];
 
