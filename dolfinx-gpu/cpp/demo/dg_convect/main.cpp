@@ -16,6 +16,7 @@
 // Space: DG0 (piecewise-constant) for the scalar solution u
 //        DG0 vector (2 components) for the advecting velocity w
 
+#include "dg0_gpu.h"
 #include "dg_convect.h"
 #include "geometry.h"
 #include <basix/finite-element.h>
@@ -57,11 +58,17 @@ int main(int argc, char* argv[])
     // -----------------------------------------------------------------------
     auto part = mesh::create_cell_partitioner(mesh::GhostMode::shared_facet);
     auto msh = std::make_shared<mesh::Mesh<U>>(mesh::create_box<U>(
-        MPI_COMM_WORLD, {{{0.0, 0.0, 0.0}, {1.0, 1.0, 1.0}}}, {1, 1, 1},
+        MPI_COMM_WORLD, {{{0.0, 0.0, 0.0}, {1.0, 1.0, 1.0}}}, {10, 10, 10},
         mesh::CellType::tetrahedron, part));
 
-    auto element = msh->geometry().cmap();
+    // Ensure facet entities and facet↔cell connectivity exist
+    int tdim = msh->topology()->dim();
+    msh->topology_mutable()->create_entities(tdim - 1);
+    msh->topology_mutable()->create_connectivity(tdim - 1, tdim);
+    msh->topology_mutable()->create_connectivity(tdim, tdim - 1);
 
+    // Tabulate basis function derivatives at facet midpoints
+    auto element = msh->geometry().cmap();
     std::size_t nq = 4;
     std::vector<T> qpoints = {0,     1 / 3, 1 / 3, 1 / 3, 0,     1 / 3,
                               1 / 3, 1 / 3, 0,     1 / 3, 1 / 3, 1 / 3};
@@ -69,20 +76,29 @@ int main(int argc, char* argv[])
     std::vector<T> table(
         std::accumulate(shape.begin(), shape.end(), 1, std::multiplies<int>()));
     element.tabulate(1, qpoints, {nq, 3}, std::span(table));
-
-    for (auto& q : table)
-      if (std::abs(q) < 1e-15)
-        q = 0;
-
     std::span<const T> dphi(table.begin() + table.size() / 4,
                             table.size() * 3 / 4);
 
-    for (int i = 0; i < table.size(); ++i)
-      std::cout << i << " " << table[i] << "\n";
-
-    compute_facet_normals(*msh, dphi);
-
-    exit(0);
+    // Prepare facet data on CPU
+    thrust::device_vector<T> normals = compute_facet_normals(*msh, dphi);
+    int nfacets = msh->topology()->index_map(tdim - 1)->size_local();
+    std::vector<std::int32_t> facet_to_cell_0(nfacets * 2, -1);
+    std::vector<std::int32_t> facet_list_0;
+    auto f_to_c = msh->topology()->connectivity(tdim - 1, tdim);
+    for (int i = 0; i < f_to_c->num_nodes(); ++i)
+    {
+      auto cells = f_to_c->links(i);
+      if (cells.size() == 2)
+      {
+        facet_list_0.push_back(i);
+        facet_to_cell_0[i * 2] = cells[0] < cells[1] ? cells[0] : cells[1];
+        facet_to_cell_0[i * 2 + 1] = cells[0] < cells[1] ? cells[1] : cells[0];
+      }
+    }
+    thrust::device_vector<std::int32_t> facet_list(facet_list_0.begin(),
+                                                   facet_list_0.end());
+    thrust::device_vector<std::int32_t> facet_to_cell(facet_to_cell_0.begin(),
+                                                      facet_to_cell_0.end());
 
     // -----------------------------------------------------------------------
     // Finite element spaces
@@ -144,13 +160,10 @@ int main(int argc, char* argv[])
           return {vals, {3, np}};
         });
 
-    // -----------------------------------------------------------------------
-    const int tdim = msh->topology()->dim();
+    // Copy w to device
+    la::Vector<T, thrust::device_vector<T>> w_device(*(w->x()));
 
-    // Ensure facet entities and facet↔cell connectivity exist
-    msh->topology_mutable()->create_entities(tdim - 1);
-    msh->topology_mutable()->create_connectivity(tdim - 1, tdim);
-    msh->topology_mutable()->create_connectivity(tdim, tdim - 1);
+    // -----------------------------------------------------------------------
 
     // -----------------------------------------------------------------------
     // Constants
@@ -194,6 +207,14 @@ int main(int argc, char* argv[])
     // RHS vector (re-assembled every step)
     // -----------------------------------------------------------------------
     la::Vector<T> b(map, bs);
+
+    // Copy vectors to device
+    la::Vector<T, thrust::device_vector<T>> b_device(b);
+    la::Vector<T, thrust::device_vector<T>> un_device(*(u_n->x()));
+
+    // Test kernel
+    run_dg0_convection(b_device.array(), un_device.array(), w_device.array(),
+                       normals, facet_to_cell, facet_list);
 
     // -----------------------------------------------------------------------
     // Output file

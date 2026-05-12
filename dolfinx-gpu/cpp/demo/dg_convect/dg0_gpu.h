@@ -1,4 +1,7 @@
 
+#pragma once
+#include <cstdint>
+
 /// @brief DG0 convection kernel
 /// @param b Output field
 /// @param u_n Input previous field
@@ -7,7 +10,6 @@
 /// @param facet_to_cell (map from facet to cells)
 /// @param facets List of facets to use
 /// @param n_facets Length of facet list
-
 template <typename T>
 __global__ void dg0_convection(T* b, const T* u_n, const T* w, const T* normals,
                                const std::int32_t* facet_to_cell,
@@ -36,4 +38,19 @@ __global__ void dg0_convection(T* b, const T* u_n, const T* w, const T* normals,
 
   atomicAdd(&b[c0], -flux);
   atomicAdd(&b[c1], flux);
+}
+
+template <typename T, typename ContainerT, typename ContainerI>
+void run_dg0_convection(ContainerT& b, const ContainerT& u_n,
+                        const ContainerT& w, const ContainerT& normals,
+                        const ContainerI& facet_to_cell,
+                        const ContainerI& facets)
+{
+  // Choose a good block size
+  dim3 block_size(512);
+  dim3 grid_size(facets.size() / block_size.x + 1);
+
+  dg0_convection<T><<<grid_size, block_size>>>(
+      b.data().get(), u_n.data().get(), w.data().get(), normals.data().get(),
+      facet_to_cell.data().get(), facets.data().get(), facets.size());
 }
