@@ -17,6 +17,7 @@
 //        DG0 vector (2 components) for the advecting velocity w
 
 #include "dg_convect.h"
+#include "geometry.h"
 #include <basix/finite-element.h>
 #include <dolfinx.h>
 #include <dolfinx/fem/Constant.h>
@@ -56,8 +57,32 @@ int main(int argc, char* argv[])
     // -----------------------------------------------------------------------
     auto part = mesh::create_cell_partitioner(mesh::GhostMode::shared_facet);
     auto msh = std::make_shared<mesh::Mesh<U>>(mesh::create_box<U>(
-        MPI_COMM_WORLD, {{{0.0, 0.0, 0.0}, {1.0, 1.0, 0.1}}}, {n, n, 5},
+        MPI_COMM_WORLD, {{{0.0, 0.0, 0.0}, {1.0, 1.0, 1.0}}}, {1, 1, 1},
         mesh::CellType::tetrahedron, part));
+
+    auto element = msh->geometry().cmap();
+
+    std::size_t nq = 4;
+    std::vector<T> qpoints = {0,     1 / 3, 1 / 3, 1 / 3, 0,     1 / 3,
+                              1 / 3, 1 / 3, 0,     1 / 3, 1 / 3, 1 / 3};
+    auto shape = element.tabulate_shape(1, nq);
+    std::vector<T> table(
+        std::accumulate(shape.begin(), shape.end(), 1, std::multiplies<int>()));
+    element.tabulate(1, qpoints, {nq, 3}, std::span(table));
+
+    for (auto& q : table)
+      if (std::abs(q) < 1e-15)
+        q = 0;
+
+    std::span<const T> dphi(table.begin() + table.size() / 4,
+                            table.size() * 3 / 4);
+
+    for (int i = 0; i < table.size(); ++i)
+      std::cout << i << " " << table[i] << "\n";
+
+    compute_facet_normals(*msh, dphi);
+
+    exit(0);
 
     // -----------------------------------------------------------------------
     // Finite element spaces

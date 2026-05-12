@@ -34,13 +34,13 @@ if(DEFINED ENV{CUDA_ARCH})
        --extended-lambda --expt-relaxed-constexpr -lineinfo")
   message(STATUS "CUDA architecture: $ENV{CUDA_ARCH}")
   enable_language(CUDA)
-  set_source_files_properties(main.cpp PROPERTIES LANGUAGE CUDA)
+  set_source_files_properties(main.cpp geometry.cpp PROPERTIES LANGUAGE CUDA)
 elseif(DEFINED ENV{HIP_ARCH})
   set(CMAKE_HIP_ARCHITECTURES $ENV{HIP_ARCH})
   set(CMAKE_HIP_STANDARD 20)
   message(STATUS "HIP architecture: $ENV{HIP_ARCH}")
   enable_language(HIP)
-  set_source_files_properties(main.cpp PROPERTIES LANGUAGE HIP)
+  set_source_files_properties(main.cpp geometry.cpp PROPERTIES LANGUAGE HIP)
 else()
   message(STATUS "No GPU back-end selected; building plain C++20")
 endif()
@@ -51,7 +51,7 @@ set(CMAKE_INCLUDE_CURRENT_DIR ON)
 # Executable
 # ---------------------------------------------------------------------------
 add_executable(${PROJECT_NAME}
-  main.cpp
+  main.cpp geometry.cpp
   ${CMAKE_CURRENT_BINARY_DIR}/dg_convect.c
 )
 
