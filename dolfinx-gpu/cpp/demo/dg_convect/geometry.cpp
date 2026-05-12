@@ -35,7 +35,6 @@ compute_facet_normals(dolfinx::mesh::Mesh<double>& mesh,
     }
   }
 
-  num_cells = 1;
   std::vector<T> facet_jacobians(num_facets * 3, 0.0);
   auto xgeom = mesh.geometry().x();
   auto dofmap = mesh.geometry().dofmap();
@@ -76,35 +75,41 @@ compute_facet_normals(dolfinx::mesh::Mesh<double>& mesh,
           std::cout << "]\n";
         }
 
-        typedef struct Vec3
-        {
-          T x, y, z;
-        } Vec3;
+        using Vec3 = std::array<T, 3>;
 
         auto cross = [](Vec3 a, Vec3 b) -> Vec3
         {
-          return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z,
-                  a.x * b.y - a.y * b.x};
+          return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
+                  a[0] * b[1] - a[1] * b[0]};
         };
 
+        // Columns of J: images of the reference basis vectors xi_0, xi_1, xi_2.
+        // For a P1 tet these are the edge vectors g1=v1-v0, g2=v2-v0, g3=v3-v0.
         Vec3 g1 = {J[0][0], J[1][0], J[2][0]};
         Vec3 g2 = {J[0][1], J[1][1], J[2][1]};
         Vec3 g3 = {J[0][2], J[1][2], J[2][2]};
 
-        Vec3 n[4];
-        n[0] = cross(g3, g1);
-        n[1] = cross(g2, g1);
-        n[2] = cross(g3, g2);
-        n[3] = {n[0].x + n[1].x + n[2].x, n[0].y + n[1].y + n[2].y,
-                n[0].z + n[1].z + n[2].z};
+        // Outward scaled normals for each facet (facet i is opposite vertex i):
+        //   Facet 0 (v1,v2,v3): tangents (g2-g1),(g3-g1)  -> (g2-g1) x (g3-g1)
+        //   Facet 1 (v0,v2,v3): tangents g2, g3            -> g3 x g2
+        //   Facet 2 (v0,v1,v3): tangents g1, g3            -> g1 x g3
+        //   Facet 3 (v0,v1,v2): tangents g1, g2            -> g2 x g1
+        Vec3 dg21 = {g2[0] - g1[0], g2[1] - g1[1], g2[2] - g1[2]};
+        Vec3 dg31 = {g3[0] - g1[0], g3[1] - g1[1], g3[2] - g1[2]};
+
+        std::array<Vec3, 4> n;
+        n[0] = cross(dg21, dg31);
+        n[1] = cross(g3, g2);
+        n[2] = cross(g1, g3);
+        n[3] = cross(g2, g1);
 
         for (int i = 0; i < 4; ++i)
-          std::cout << "n[" << i << "] = " << n[i].x << "," << n[i].y << ","
-                    << n[i].z << "\n";
+          std::cout << "n[" << i << "] = " << n[i][0] << "," << n[i][1] << ","
+                    << n[i][2] << "\n";
 
-        facet_jacobians[idx * 3] = n[f].x;
-        facet_jacobians[idx * 3 + 1] = n[f].y;
-        facet_jacobians[idx * 3 + 2] = n[f].z;
+        facet_jacobians[idx * 3]     = n[f][0];
+        facet_jacobians[idx * 3 + 1] = n[f][1];
+        facet_jacobians[idx * 3 + 2] = n[f][2];
       }
     }
   }
