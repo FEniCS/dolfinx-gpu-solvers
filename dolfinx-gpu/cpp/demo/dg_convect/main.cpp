@@ -1,0 +1,233 @@
+// Copyright (C) 2025 Chris Richardson
+//
+// This file is part of DOLFINx (https://www.fenicsproject.org)
+//
+// SPDX-License-Identifier: MIT
+//
+// C++ implementation of an explicit DG0 upwind advection scheme on the unit
+// square.  The variational forms are generated from dg_convect.py via ffcx.
+//
+// Time integration: forward Euler
+//   M u^{n+1} = b(u^n)
+// where M is the diagonal DG0 mass matrix (scaled by 1/dt) and b is the
+// explicit RHS assembled from form L.  Because M is strictly diagonal for
+// DG0 the solve reduces to element-wise division.
+//
+// Space: DG0 (piecewise-constant) for the scalar solution u
+//        DG0 vector (2 components) for the advecting velocity w
+
+#include "dg_convect.h"
+#include <basix/finite-element.h>
+#include <dolfinx.h>
+#include <dolfinx/fem/Constant.h>
+#include <dolfinx/io/XDMFFile.h>
+#include <dolfinx/la/Vector.h>
+
+#include <algorithm>
+#include <cmath>
+#include <map>
+#include <numbers>
+#include <numeric>
+#include <ranges>
+#include <span>
+#include <vector>
+
+using namespace dolfinx;
+using T = double;
+using U = dolfinx::scalar_value_t<T>;
+
+int main(int argc, char* argv[])
+{
+  MPI_Init(&argc, &argv);
+  dolfinx::init_logging(argc, argv);
+
+  {
+    // -----------------------------------------------------------------------
+    // Simulation parameters
+    // -----------------------------------------------------------------------
+    constexpr int n = 64;
+    constexpr double t_end = 5.0;
+    constexpr int num_steps = 1000;
+    constexpr double dt = t_end / num_steps;
+    constexpr int io_stride = 5; // write output every this many steps
+
+    // -----------------------------------------------------------------------
+    // Mesh: box of tets, shared-facet ghost mode (needed for dS)
+    // -----------------------------------------------------------------------
+    auto part = mesh::create_cell_partitioner(mesh::GhostMode::shared_facet);
+    auto msh = std::make_shared<mesh::Mesh<U>>(mesh::create_box<U>(
+        MPI_COMM_WORLD, {{{0.0, 0.0, 0.0}, {1.0, 1.0, 0.1}}}, {n, n, 5},
+        mesh::CellType::tetrahedron, part));
+
+    // -----------------------------------------------------------------------
+    // Finite element spaces
+    //   V : DG0 scalar  (piecewise-constant solution)
+    //   W : DG0 vector  (advecting velocity, 2 components)
+    // -----------------------------------------------------------------------
+    auto elem_dg0 = basix::create_element<U>(
+        basix::element::family::P, basix::cell::type::tetrahedron, 0,
+        basix::element::lagrange_variant::unset,
+        basix::element::dpc_variant::unset,
+        /* discontinuous = */ true);
+
+    auto V
+        = std::make_shared<fem::FunctionSpace<U>>(fem::create_functionspace<U>(
+            msh, std::make_shared<fem::FiniteElement<U>>(elem_dg0)));
+
+    // Vector DG0: same scalar element, value_shape = {2}
+    auto W
+        = std::make_shared<fem::FunctionSpace<U>>(fem::create_functionspace<U>(
+            msh, std::make_shared<fem::FiniteElement<U>>(
+                     elem_dg0, std::vector<std::size_t>{3})));
+
+    // -----------------------------------------------------------------------
+    // Functions
+    // -----------------------------------------------------------------------
+    auto u_n = std::make_shared<fem::Function<T>>(V); // previous time step
+    auto w = std::make_shared<fem::Function<T>>(W);   // velocity field
+
+    // Initial condition: sin(4 pi x) sin(4 pi y)
+    u_n->interpolate(
+        [](auto x) -> std::pair<std::vector<T>, std::vector<std::size_t>>
+        {
+          const std::size_t np = x.extent(1);
+          std::vector<T> vals(np);
+          std::ranges::transform(
+              std::views::iota(std::size_t(0), np), vals.begin(),
+              [&x](std::size_t p)
+              {
+                return std::sin(4 * std::numbers::pi * x(0, p))
+                       * std::sin(4 * std::numbers::pi * x(1, p));
+              });
+          return {vals, {np}};
+        });
+
+    // Velocity: divergence-free rotation  w = (sin(pi x)cos(pi y),
+    //                                          -cos(pi x)sin(pi y))
+    w->interpolate(
+        [](auto x) -> std::pair<std::vector<T>, std::vector<std::size_t>>
+        {
+          const std::size_t np = x.extent(1);
+          std::vector<T> vals(3 * np, 0.0);
+          for (std::size_t p = 0; p < np; ++p)
+          {
+            vals[p] = std::sin(std::numbers::pi * x(0, p))
+                      * std::cos(std::numbers::pi * x(1, p));
+            vals[np + p] = -std::cos(std::numbers::pi * x(0, p))
+                           * std::sin(std::numbers::pi * x(1, p));
+          }
+          return {vals, {3, np}};
+        });
+
+    // -----------------------------------------------------------------------
+    const int tdim = msh->topology()->dim();
+
+    // Ensure facet entities and facet↔cell connectivity exist
+    msh->topology_mutable()->create_entities(tdim - 1);
+    msh->topology_mutable()->create_connectivity(tdim - 1, tdim);
+    msh->topology_mutable()->create_connectivity(tdim, tdim - 1);
+
+    // -----------------------------------------------------------------------
+    // Constants
+    // -----------------------------------------------------------------------
+    auto dt_const = std::make_shared<fem::Constant<T>>(T(dt));
+    auto w0_const = std::make_shared<fem::Constant<T>>(T(1));
+
+    // -----------------------------------------------------------------------
+    // Variational forms
+    //   L_form : explicit RHS (cell + interior facets + inflow BC)
+    //   m_form : mass-matrix diagonal (cell integral of c_one / dt)
+    // -----------------------------------------------------------------------
+    // Single-domain problems pass an empty entity_maps vector.
+    fem::Form<T> L_form = fem::create_form<T>(
+        *form_dg_convect_L, {V}, {{"u_n", u_n}, {"w", w}},
+        {{"delta_t", dt_const}, {"w0", w0_const}}, {}, {});
+
+    fem::Form<T> m_form = fem::create_form<T>(*form_dg_convect_m, {V}, {},
+                                              {{"delta_t", dt_const}}, {}, {});
+
+    // -----------------------------------------------------------------------
+    // Assemble mass-matrix diagonal  M[i] = |T_i| / dt
+    // (done once; M is time-independent)
+    // -----------------------------------------------------------------------
+    auto map = V->dofmap()->index_map;
+    const int bs = V->dofmap()->index_map_bs();
+    const std::size_t nlocal = map->size_local();
+
+    la::Vector<T> M(map, bs);
+    std::ranges::fill(M.array(), T(0));
+    fem::assemble_vector(M.array(), m_form);
+    M.scatter_rev(std::plus<T>());
+
+    // Inverse diagonal for the explicit solve  u_new = b / M
+    // array() returns std::vector<T>&; wrap in std::span to use .first().
+    std::vector<T> inv_M(nlocal);
+    std::ranges::transform(std::span(M.array()).first(nlocal), inv_M.begin(),
+                           [](T v) { return T(1) / v; });
+
+    // -----------------------------------------------------------------------
+    // RHS vector (re-assembled every step)
+    // -----------------------------------------------------------------------
+    la::Vector<T> b(map, bs);
+
+    // -----------------------------------------------------------------------
+    // Output file
+    // -----------------------------------------------------------------------
+    io::XDMFFile xdmf(msh->comm(), "u.xdmf", "w");
+    xdmf.write_mesh(*msh);
+
+    // -----------------------------------------------------------------------
+    // Time-stepping loop
+    // -----------------------------------------------------------------------
+    double t = 0.0;
+    xdmf.write_function(*u_n, t);
+
+    for (int step = 0; step < num_steps; ++step)
+    {
+      std::cout << step << "\n";
+      w0_const->value[0] = sin(static_cast<double>(step)
+                               / static_cast<double>(num_steps) * M_PI * 4);
+
+      t += dt;
+
+      // Assemble RHS
+      std::ranges::fill(b.array(), T(0));
+      fem::assemble_vector(b.array(), L_form);
+      b.scatter_rev(std::plus<T>());
+
+      // Diagonal solve: u_new[i] = b[i] / M[i]
+      auto& u_arr = u_n->x()->array();
+      std::ranges::transform(std::views::iota(std::size_t(0), nlocal),
+                             u_arr.begin(), [&](std::size_t i)
+                             { return inv_M[i] * b.array()[i]; });
+
+      // Scatter updated local values to ghost DOFs
+      u_n->x()->scatter_fwd();
+
+      if ((step + 1) % io_stride == 0)
+        xdmf.write_function(*u_n, t);
+    }
+
+    xdmf.close();
+
+    // Print final L2 norm as a basic sanity check
+    const T local_sq = std::transform_reduce(
+        u_n->x()->array().begin(),
+        std::next(u_n->x()->array().begin(),
+                  static_cast<std::ptrdiff_t>(nlocal)),
+        T(0), std::plus<T>(), [](T v) { return v * v; });
+
+    T global_sq = 0;
+
+    MPI_Reduce(&local_sq, &global_sq, 1, dolfinx::MPI::mpi_t<T>, MPI_SUM, 0,
+               msh->comm());
+
+    if (dolfinx::MPI::rank(msh->comm()) == 0)
+      std::cout << "||u||_l2 = " << std::sqrt(global_sq) << "\n";
+
+    dolfinx::list_timings(MPI_COMM_WORLD);
+  }
+
+  MPI_Finalize();
+  return 0;
+}
