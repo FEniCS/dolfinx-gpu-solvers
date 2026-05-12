@@ -40,12 +40,14 @@ __global__ void dg0_convection(T* b, const T* u_n, const T* w, const T* normals,
   atomicAdd(&b[c1], flux);
 }
 
-template <typename T, typename ContainerT, typename ContainerI>
+template <typename ContainerT, typename ContainerI>
 void run_dg0_convection(ContainerT& b, const ContainerT& u_n,
                         const ContainerT& w, const ContainerT& normals,
                         const ContainerI& facet_to_cell,
                         const ContainerI& facets)
 {
+  using T = typename ContainerT::value_type;
+
   // Choose a good block size
   dim3 block_size(512);
   dim3 grid_size(facets.size() / block_size.x + 1);
