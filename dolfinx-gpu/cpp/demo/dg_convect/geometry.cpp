@@ -39,6 +39,16 @@ compute_facet_normals(dolfinx::mesh::Mesh<double>& mesh,
   std::vector<T> facet_jacobians(num_facets * 3, 0.0);
   auto xgeom = mesh.geometry().x();
   auto dofmap = mesh.geometry().dofmap();
+
+  // Cross product
+  using Vec3 = std::array<T, 3>;
+  auto cross = [](Vec3 a, Vec3 b) -> Vec3
+  {
+    return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0]};
+  };
+
+  // Iterate over cells
   for (int c = 0; c < num_cells; ++c)
   {
     // Get cell geometry
@@ -66,14 +76,6 @@ compute_facet_normals(dolfinx::mesh::Mesh<double>& mesh,
               J[i][j] += coord_dofs[k][i] * dphi[j * 16 + f * 4 + k];
           }
         }
-
-        using Vec3 = std::array<T, 3>;
-
-        auto cross = [](Vec3 a, Vec3 b) -> Vec3
-        {
-          return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
-                  a[0] * b[1] - a[1] * b[0]};
-        };
 
         // Columns of J: images of the reference basis vectors xi_0, xi_1, xi_2.
         // For a P1 tet these are the edge vectors g1=v1-v0, g2=v2-v0, g3=v3-v0.
