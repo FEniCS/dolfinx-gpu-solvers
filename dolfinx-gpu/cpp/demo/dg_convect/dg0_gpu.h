@@ -15,7 +15,7 @@ __global__ void dg0_convection(T* b, const T* u_n, const T* w, const T* normals,
 {
   // Load a set of facets
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
-  if (idx > n_facets)
+  if (idx >= n_facets)
     return;
   int fglobal = facets[idx];
 
@@ -34,6 +34,6 @@ __global__ void dg0_convection(T* b, const T* u_n, const T* w, const T* normals,
   // Apply upwinding
   T flux = fmax(w0n, 0) * u_n[c0] + fmin(w1n, 0) * u_n[c1];
 
-  atomicAdd(&b[c0], flux);
-  atomicAdd(&b[c1], -flux);
+  atomicAdd(&b[c0], -flux);
+  atomicAdd(&b[c1], flux);
 }
