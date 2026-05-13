@@ -217,10 +217,6 @@ int main(int argc, char* argv[])
     la::Vector<T, thrust::device_vector<T>> b_device(b);
     la::Vector<T, thrust::device_vector<T>> un_device(*(u_n->x()));
 
-    // Test kernel
-    run_dg0_convection(b_device.array(), un_device.array(), w_device.array(),
-                       normals, detJ, facet_to_cell, facet_list, cell_list, dt);
-
     // -----------------------------------------------------------------------
     // Output file
     // -----------------------------------------------------------------------
@@ -240,6 +236,11 @@ int main(int argc, char* argv[])
                                / static_cast<double>(num_steps) * M_PI * 4);
 
       t += dt;
+
+      // Run kernel on GPU
+      run_dg0_convection(b_device.array(), un_device.array(), w_device.array(),
+                         normals, detJ, facet_to_cell, facet_list, cell_list,
+                         dt);
 
       // Assemble RHS
       std::ranges::fill(b.array(), T(0));
