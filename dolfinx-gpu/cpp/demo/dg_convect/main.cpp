@@ -47,7 +47,7 @@ int main(int argc, char* argv[])
     // -----------------------------------------------------------------------
     // Simulation parameters
     // -----------------------------------------------------------------------
-    constexpr int n = 64;
+    constexpr int n = 80;
     constexpr double t_end = 2.0;
     constexpr int num_steps = 1000;
     constexpr double dt = t_end / num_steps;
@@ -58,7 +58,7 @@ int main(int argc, char* argv[])
     // -----------------------------------------------------------------------
     auto part = mesh::create_cell_partitioner(mesh::GhostMode::shared_facet);
     auto msh = std::make_shared<mesh::Mesh<U>>(mesh::create_box<U>(
-        MPI_COMM_WORLD, {{{0.0, 0.0, 0.0}, {1.0, 1.0, 0.1}}}, {n, n, 10},
+        MPI_COMM_WORLD, {{{0.0, 0.0, 0.0}, {1.0, 1.0, 0.1}}}, {n, n, n / 10},
         mesh::CellType::tetrahedron, part));
 
     // Ensure facet entities and facet↔cell connectivity exist
