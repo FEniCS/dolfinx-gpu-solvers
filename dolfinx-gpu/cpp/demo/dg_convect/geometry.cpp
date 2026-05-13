@@ -4,7 +4,7 @@
 // Compute facet normal/jacobians on each facet
 
 template <typename T>
-thrust::device_vector<T>
+std::pair<thrust::device_vector<T>, thrust::device_vector<T>>
 compute_facet_normals(dolfinx::mesh::Mesh<double>& mesh,
                       std::span<const T> dphi)
 {
@@ -37,6 +37,7 @@ compute_facet_normals(dolfinx::mesh::Mesh<double>& mesh,
 
   // Compute facet Jacobians/normals
   std::vector<T> facet_jacobians(num_facets * 3, 0.0);
+  std::vector<T> detJ(num_cells);
   auto xgeom = mesh.geometry().x();
   auto dofmap = mesh.geometry().dofmap();
 
@@ -63,9 +64,6 @@ compute_facet_normals(dolfinx::mesh::Mesh<double>& mesh,
       std::int32_t idx = facet_list[c * num_facets_per_cell + f];
       if (idx >= 0)
       {
-        // For linear cells, J is same everywhere, but will vary
-        // across cell for higher-order.
-
         T J[3][3];
         for (int i = 0; i < 3; i++)
         {
@@ -76,6 +74,14 @@ compute_facet_normals(dolfinx::mesh::Mesh<double>& mesh,
               J[i][j] += coord_dofs[k][i] * dphi[j * 16 + f * 4 + k];
           }
         }
+
+        // detJ same everywhere for linear cell
+        detJ[c] = J[0][0] * (J[1][1] * J[2][2] - J[1][2] * J[2][1])
+                  - J[0][1] * (J[1][0] * J[2][2] - J[2][0] * J[1][2])
+                  + J[0][2] * (J[1][0] * J[2][1] - J[2][0] * J[1][1]);
+
+        // For linear cells, J is same everywhere, but will vary
+        // across cell for higher-order.
 
         // Columns of J: images of the reference basis vectors xi_0, xi_1, xi_2.
         // For a P1 tet these are the edge vectors g1=v1-v0, g2=v2-v0, g3=v3-v0.
@@ -98,18 +104,11 @@ compute_facet_normals(dolfinx::mesh::Mesh<double>& mesh,
     }
   }
 
-  for (int f = 0; f < num_facets; ++f)
-  {
-    std::cout << "[";
-    for (int j = 0; j < 3; ++j)
-      std::cout << facet_jacobians[f * 3 + j] << " ";
-    std::cout << "]\n";
-  }
-
-  return thrust::device_vector<T>(facet_jacobians.begin(),
-                                  facet_jacobians.end());
+  return {
+      thrust::device_vector<T>(facet_jacobians.begin(), facet_jacobians.end()),
+      thrust::device_vector<T>(detJ.begin(), detJ.end())};
 }
 
-template thrust::device_vector<double>
+template std::pair<thrust::device_vector<double>, thrust::device_vector<double>>
 compute_facet_normals(dolfinx::mesh::Mesh<double>& mesh,
                       std::span<const double> dphi);

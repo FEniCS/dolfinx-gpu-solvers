@@ -58,7 +58,7 @@ int main(int argc, char* argv[])
     // -----------------------------------------------------------------------
     auto part = mesh::create_cell_partitioner(mesh::GhostMode::shared_facet);
     auto msh = std::make_shared<mesh::Mesh<U>>(mesh::create_box<U>(
-        MPI_COMM_WORLD, {{{0.0, 0.0, 0.0}, {1.0, 1.0, 1.0}}}, {10, 10, 10},
+        MPI_COMM_WORLD, {{{0.0, 0.0, 0.0}, {1.0, 1.0, 0.1}}}, {n, n, 10},
         mesh::CellType::tetrahedron, part));
 
     // Ensure facet entities and facet↔cell connectivity exist
@@ -80,7 +80,7 @@ int main(int argc, char* argv[])
                             table.size() * 3 / 4);
 
     // Prepare facet data on CPU
-    thrust::device_vector<T> normals = compute_facet_normals(*msh, dphi);
+    auto [normals, detJ] = compute_facet_normals(*msh, dphi);
     int nfacets = msh->topology()->index_map(tdim - 1)->size_local();
     std::vector<std::int32_t> facet_to_cell_0(nfacets * 2, -1);
     std::vector<std::int32_t> facet_list_0;
@@ -99,6 +99,11 @@ int main(int argc, char* argv[])
                                                    facet_list_0.end());
     thrust::device_vector<std::int32_t> facet_to_cell(facet_to_cell_0.begin(),
                                                       facet_to_cell_0.end());
+    std::vector<std::int32_t> cell_list_0(
+        msh->topology()->index_map(msh->topology()->dim())->size_local());
+    std::iota(cell_list_0.begin(), cell_list_0.end(), 0);
+    thrust::device_vector<std::int32_t> cell_list(cell_list_0.begin(),
+                                                  cell_list_0.end());
 
     // -----------------------------------------------------------------------
     // Finite element spaces
@@ -214,7 +219,7 @@ int main(int argc, char* argv[])
 
     // Test kernel
     run_dg0_convection(b_device.array(), un_device.array(), w_device.array(),
-                       normals, facet_to_cell, facet_list);
+                       normals, detJ, facet_to_cell, facet_list, cell_list, dt);
 
     // -----------------------------------------------------------------------
     // Output file

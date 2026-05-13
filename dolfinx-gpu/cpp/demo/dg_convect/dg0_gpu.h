@@ -40,11 +40,27 @@ __global__ void dg0_convection(T* b, const T* u_n, const T* w, const T* normals,
   atomicAdd(&b[c1], flux);
 }
 
+// Assemble RHS dx term
+// inner(u_n / dt, v) * dx
+template <typename T>
+__global__ void dg0_mass(T* b, T dt, const T* u_n, const T* detJ,
+                         const int* cells, int n_cells)
+{
+  // Load a set of cells
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx >= n_cells)
+    return;
+  int cglobal = cells[idx];
+
+  b[cglobal] += detJ[cglobal] * u_n[cglobal];
+}
+
 template <typename ContainerT, typename ContainerI>
 void run_dg0_convection(ContainerT& b, const ContainerT& u_n,
                         const ContainerT& w, const ContainerT& normals,
-                        const ContainerI& facet_to_cell,
-                        const ContainerI& facets)
+                        const ContainerT& detJ, const ContainerI& facet_to_cell,
+                        const ContainerI& facets, const ContainerI& cells,
+                        double dt)
 {
   using T = typename ContainerT::value_type;
 
@@ -55,4 +71,9 @@ void run_dg0_convection(ContainerT& b, const ContainerT& u_n,
   dg0_convection<T><<<grid_size, block_size>>>(
       b.data().get(), u_n.data().get(), w.data().get(), normals.data().get(),
       facet_to_cell.data().get(), facets.data().get(), facets.size());
+
+  grid_size = dim3(cells.size() / block_size.x + 1);
+  dg0_mass<T><<<grid_size, block_size>>>(b.data().get(), dt, u_n.data().get(),
+                                         detJ.data().get(), cells.data().get(),
+                                         cells.size());
 }
