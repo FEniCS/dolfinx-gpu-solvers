@@ -48,7 +48,7 @@ int main(int argc, char* argv[])
     // Simulation parameters
     // -----------------------------------------------------------------------
     constexpr int n = 64;
-    constexpr double t_end = 5.0;
+    constexpr double t_end = 2.0;
     constexpr int num_steps = 1000;
     constexpr double dt = t_end / num_steps;
     constexpr int io_stride = 5; // write output every this many steps
@@ -229,6 +229,7 @@ int main(int argc, char* argv[])
     double t = 0.0;
     xdmf.write_function(*u_n, t);
 
+    bool output_gpu = true;
     for (int step = 0; step < num_steps; ++step)
     {
       std::cout << step << "\n";
@@ -238,26 +239,32 @@ int main(int argc, char* argv[])
       t += dt;
 
       // Run kernel on GPU
+      thrust::fill(b_device.array().begin(), b_device.array().end(), T(0));
       run_dg0_convection(b_device.array(), un_device.array(), w_device.array(),
                          normals, detJ, facet_to_cell, facet_list, cell_list,
                          dt);
 
-      // Assemble RHS
-      std::ranges::fill(b.array(), T(0));
-      fem::assemble_vector(b.array(), L_form);
-      b.scatter_rev(std::plus<T>());
+      // // Assemble RHS
+      // std::ranges::fill(b.array(), T(0));
+      // fem::assemble_vector(b.array(), L_form);
+      // b.scatter_rev(std::plus<T>());
 
-      // Diagonal solve: u_new[i] = b[i] / M[i]
+      // // Diagonal solve: u_new[i] = b[i] / M[i]
       auto& u_arr = u_n->x()->array();
-      std::ranges::transform(std::views::iota(std::size_t(0), nlocal),
-                             u_arr.begin(), [&](std::size_t i)
-                             { return inv_M[i] * b.array()[i]; });
+      // std::ranges::transform(std::views::iota(std::size_t(0), nlocal),
+      //                        u_arr.begin(), [&](std::size_t i)
+      //                        { return inv_M[i] * b.array()[i]; });
 
-      // Scatter updated local values to ghost DOFs
-      u_n->x()->scatter_fwd();
+      // // Scatter updated local values to ghost DOFs
+      // u_n->x()->scatter_fwd();
 
       if ((step + 1) % io_stride == 0)
+      {
+        if (output_gpu)
+          thrust::copy(un_device.array().begin(), un_device.array().end(),
+                       u_arr.begin());
         xdmf.write_function(*u_n, t);
+      }
     }
 
     xdmf.close();
