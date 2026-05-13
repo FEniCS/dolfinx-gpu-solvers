@@ -53,8 +53,11 @@ __global__ void dg0_mass(T* u_n, T dt, const T* b, const T* detJ,
     return;
   int cglobal = cells[idx];
 
-  T update = b[cglobal] + detJ[cglobal] * u_n[cglobal] / (T(6) * dt);
-  u_n[cglobal] = update / (T(6) * dt * detJ[cglobal]);
+  // b_total = (u_n * detJ / (6*dt)) + b_facet
+  // M_diag  = detJ / (6*dt)
+  // u_new   = b_total / M_diag = b_total * (6*dt) / detJ
+  T b_total = b[cglobal] + detJ[cglobal] * u_n[cglobal] / (T(6) * dt);
+  u_n[cglobal] = b_total * (T(6) * dt) / detJ[cglobal];
 }
 
 template <typename ContainerT, typename ContainerI>
