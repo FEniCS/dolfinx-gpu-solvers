@@ -2,6 +2,13 @@
 #pragma once
 #include <cstdint>
 
+// HIP requires the runtime header to be included explicitly for device
+// built-ins (blockIdx, blockDim, threadIdx, atomicAdd, etc.).
+// CUDA/nvcc injects these implicitly, so no include is needed there.
+#if defined(__HIP__)
+#include <hip/hip_runtime.h>
+#endif
+
 /// @brief DG0 convection kernel
 /// @param b Output field
 /// @param u_n Input previous field
