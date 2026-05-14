@@ -35,10 +35,6 @@ __global__ void compute_w_at_qp(const T* w_dof, const T* phi, T* w_q,
       for (int iq = 0; iq < nq; ++iq)
       {
         int f0 = facets[f] * nq + iq;
-        w_q[f0 * 3] = 0.0;
-        w_q[f0 * 3 + 1] = 0.0;
-        w_q[f0 * 3 + 2] = 0.0;
-
         for (int i = 0; i < nphi; ++i)
         {
           int c0 = cglobal * nphi + i;
@@ -129,18 +125,21 @@ void run_dg0_convection(ContainerT& b, ContainerT& u_n, const ContainerT& w,
 
   // If w is constant, could move this outside loop
   constexpr int nq = 1;
-  thrust::device_vector<T> w_q(facets.size() * 3 * nq);
-
+  thrust::device_vector<T> w_q(facets.size() * 3 * nq, T(0));
   grid_size = dim3(cells.size() / block_size.x + 1);
   compute_w_at_qp<T><<<grid_size, block_size>>>(
       w.data().get(), phi.data().get(), w_q.data().get(),
       cell_to_facet.data().get(), cells.data().get(), cells.size());
+
+  cudaSynchronizeDevice();
 
   grid_size = dim3(facets.size() / block_size.x + 1);
   dg0_convection<T><<<grid_size, block_size>>>(
       b.data().get(), u_n.data().get(), w_q.data().get(), phi.data().get(),
       normals.data().get(), facet_to_cell.data().get(), facets.data().get(),
       facets.size());
+
+  cudaSynchronizeDevice();
 
   grid_size = dim3(cells.size() / block_size.x + 1);
   dg0_mass<T><<<grid_size, block_size>>>(u_n.data().get(), dt, b.data().get(),
