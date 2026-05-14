@@ -76,11 +76,11 @@ int main(int argc, char* argv[])
     std::vector<T> table(
         std::accumulate(shape.begin(), shape.end(), 1, std::multiplies<int>()));
     element.tabulate(1, qpoints, {nq, 3}, std::span(table));
-    std::span<const T> dphi(table.begin() + table.size() / 4,
-                            table.size() * 3 / 4);
+    thrust::device_vector<T> phi_device(table.begin(), table.end());
 
     // Prepare facet data on CPU
-    auto [normals, detJ] = compute_facet_normals(*msh, dphi);
+    std::span<const T> phi(table.begin(), table.size());
+    auto [normals, detJ] = compute_facet_normals(*msh, phi);
     int nfacets = msh->topology()->index_map(tdim - 1)->size_local();
     std::vector<std::int32_t> facet_to_cell_0(nfacets * 2, -1);
     std::vector<std::int32_t> facet_list_0;
@@ -241,8 +241,8 @@ int main(int argc, char* argv[])
       // Run kernel on GPU
       thrust::fill(b_device.array().begin(), b_device.array().end(), T(0));
       run_dg0_convection(b_device.array(), un_device.array(), w_device.array(),
-                         normals, detJ, facet_to_cell, facet_list, cell_list,
-                         dt);
+                         phi_device, normals, detJ, facet_to_cell, facet_list,
+                         cell_list, dt);
 
       // // Assemble RHS
       // std::ranges::fill(b.array(), T(0));

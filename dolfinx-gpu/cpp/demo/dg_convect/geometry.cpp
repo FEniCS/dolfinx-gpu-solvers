@@ -5,9 +5,11 @@
 
 template <typename T>
 std::pair<thrust::device_vector<T>, thrust::device_vector<T>>
-compute_facet_normals(dolfinx::mesh::Mesh<double>& mesh,
-                      std::span<const T> dphi)
+compute_facet_normals(dolfinx::mesh::Mesh<double>& mesh, std::span<const T> phi)
 {
+  // Extract basis function derivatives from table (phi, phi_x, phi_y, phi_z)
+  std::span<const T> dphi(std::next(phi.begin(), phi.size() / 4),
+                          phi.size() * 3 / 4);
   int tdim = mesh.topology()->dim();
   mesh.topology()->create_connectivity(tdim, tdim - 1);
   auto c_to_f = mesh.topology()->connectivity(tdim, tdim - 1);
@@ -66,7 +68,7 @@ compute_facet_normals(dolfinx::mesh::Mesh<double>& mesh,
       {
         J[i][j] = 0.0;
         for (int k = 0; k < 4; k++)
-          J[i][j] += coord_dofs[k][i] * dphi[j * 16 + k];  // f=0
+          J[i][j] += coord_dofs[k][i] * dphi[j * 16 + k]; // f=0
       }
 
     detJ[c] = J[0][0] * (J[1][1] * J[2][2] - J[1][2] * J[2][1])
@@ -94,7 +96,7 @@ compute_facet_normals(dolfinx::mesh::Mesh<double>& mesh,
       std::int32_t idx = facet_list[c * num_facets_per_cell + f];
       if (idx >= 0)
       {
-        facet_jacobians[idx * 3]     = n[f][0];
+        facet_jacobians[idx * 3] = n[f][0];
         facet_jacobians[idx * 3 + 1] = n[f][1];
         facet_jacobians[idx * 3 + 2] = n[f][2];
       }

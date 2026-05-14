@@ -2,16 +2,61 @@
 #pragma once
 #include <cstdint>
 
+template <typename T>
+__global__ void compute_w_at_qp(const T* w_dof, const T* phi, T* w_q,
+                                const std::int32_t* cell_to_facet,
+                                const std::int32_t* cells, int n_cells)
+{
+  // Load a set of cells
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx >= n_cells)
+    return;
+  std::int32_t cglobal = cells[idx];
+
+  // For P1, one quadrature point
+  constexpr int nq = 1;
+  // 4 basis functions on tet
+  constexpr int nphi = 4;
+
+  // Get facets of cell
+  const std::int32_t* facets = cell_to_facet + cglobal * 4;
+  for (int f = 0; f < 4; ++f)
+  {
+    if (facets[f] != -1)
+    {
+      for (int iq = 0; iq < nq; ++iq)
+      {
+        int f0 = facets[f] * nq + iq;
+        w_q[f0 * 3] = 0.0;
+        w_q[f0 * 3 + 1] = 0.0;
+        w_q[f0 * 3 + 2] = 0.0;
+
+        for (int i = 0; i < nphi; ++i)
+        {
+          T phi_val = phi[(f * nq + iq) * nphi + i];
+
+          // Compute w at qp
+          w_q[f0 * 3] += w_dof[(cglobal * nphi + i) * 3] * phi_val;
+          w_q[f0 * 3 + 1] += w_dof[(cglobal * nphi + i) * 3 + 1] * phi_val;
+          w_q[f0 * 3 + 2] += w_dof[(cglobal * nphi + i) * 3 + 2] * phi_val;
+        }
+      }
+    }
+  }
+}
+
 /// @brief DG0 convection kernel
 /// @param b Output field
 /// @param u_n Input previous field
 /// @param w Velocity vector 3D
+/// @param phi Basis functions for u_n and w
 /// @param normals Facet normals (incl jacobian scaling)
 /// @param facet_to_cell (map from facet to cells)
 /// @param facets List of facets to use
 /// @param n_facets Length of facet list
 template <typename T>
-__global__ void dg0_convection(T* b, const T* u_n, const T* w, const T* normals,
+__global__ void dg0_convection(T* b, const T* u_n, const T* w, const T* phi,
+                               const T* normals,
                                const std::int32_t* facet_to_cell,
                                const int* facets, int n_facets)
 {
@@ -61,8 +106,8 @@ __global__ void dg0_mass(T* u_n, T dt, const T* b, const T* detJ,
 
 template <typename ContainerT, typename ContainerI>
 void run_dg0_convection(ContainerT& b, ContainerT& u_n, const ContainerT& w,
-                        const ContainerT& normals, const ContainerT& detJ,
-                        const ContainerI& facet_to_cell,
+                        const ContainerT& phi, const ContainerT& normals,
+                        const ContainerT& detJ, const ContainerI& facet_to_cell,
                         const ContainerI& facets, const ContainerI& cells,
                         double dt)
 {
@@ -73,8 +118,9 @@ void run_dg0_convection(ContainerT& b, ContainerT& u_n, const ContainerT& w,
   dim3 grid_size(facets.size() / block_size.x + 1);
 
   dg0_convection<T><<<grid_size, block_size>>>(
-      b.data().get(), u_n.data().get(), w.data().get(), normals.data().get(),
-      facet_to_cell.data().get(), facets.data().get(), facets.size());
+      b.data().get(), u_n.data().get(), w.data().get(), phi.data().get(),
+      normals.data().get(), facet_to_cell.data().get(), facets.data().get(),
+      facets.size());
 
   grid_size = dim3(cells.size() / block_size.x + 1);
   dg0_mass<T><<<grid_size, block_size>>>(u_n.data().get(), dt, b.data().get(),
