@@ -3,6 +3,13 @@
 #include <cstdint>
 #include <thrust/device_vector.h>
 
+// HIP requires the runtime header to be included explicitly for device
+// built-ins (blockIdx, blockDim, threadIdx, atomicAdd, etc.).
+// CUDA/nvcc injects these implicitly, so no include is needed there.
+#if defined(__HIP__)
+#include <hip/hip_runtime.h>
+#endif
+
 template <typename T>
 __global__ void compute_w_at_qp(const T* w_dof, const T* phi, T* w_q,
                                 const std::int32_t* cell_to_facet,
