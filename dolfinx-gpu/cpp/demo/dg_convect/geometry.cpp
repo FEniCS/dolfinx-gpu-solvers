@@ -4,7 +4,8 @@
 // Compute facet normal/jacobians on each facet
 
 template <typename T>
-std::pair<thrust::device_vector<T>, thrust::device_vector<T>>
+std::tuple<thrust::device_vector<T>, thrust::device_vector<T>,
+           thrust::device_vector<std::int32_t>>
 compute_facet_normals(dolfinx::mesh::Mesh<double>& mesh, std::span<const T> phi)
 {
   // Extract basis function derivatives from table (phi, phi_x, phi_y, phi_z)
@@ -105,9 +106,13 @@ compute_facet_normals(dolfinx::mesh::Mesh<double>& mesh, std::span<const T> phi)
 
   return {
       thrust::device_vector<T>(facet_jacobians.begin(), facet_jacobians.end()),
-      thrust::device_vector<T>(detJ.begin(), detJ.end())};
+      thrust::device_vector<T>(detJ.begin(), detJ.end()),
+      thrust::device_vector<std::int32_t>(facet_list.begin(),
+                                          facet_list.end())};
 }
 
-template std::pair<thrust::device_vector<double>, thrust::device_vector<double>>
+template std::tuple<thrust::device_vector<double>,
+                    thrust::device_vector<double>,
+                    thrust::device_vector<std::int32_t>>
 compute_facet_normals(dolfinx::mesh::Mesh<double>& mesh,
                       std::span<const double> dphi);

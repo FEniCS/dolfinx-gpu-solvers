@@ -47,7 +47,7 @@ int main(int argc, char* argv[])
     // -----------------------------------------------------------------------
     // Simulation parameters
     // -----------------------------------------------------------------------
-    constexpr int n = 80;
+    constexpr int n = 50;
     constexpr double t_end = 2.0;
     constexpr int num_steps = 1000;
     constexpr double dt = t_end / num_steps;
@@ -77,10 +77,10 @@ int main(int argc, char* argv[])
     //   Facet 2 (opp. v2): centroid (1/3,   0, 1/3)
     //   Facet 3 (opp. v3): centroid (1/3, 1/3,   0)
     // Note: use T(1)/3 not 1/3 — integer division would give 0.
-    std::vector<T> qpoints = {T(1)/3, T(1)/3, T(1)/3,
-                              T(0),   T(1)/3, T(1)/3,
-                              T(1)/3, T(0),   T(1)/3,
-                              T(1)/3, T(1)/3, T(0)};
+    std::vector<T> qpoints
+        = {T(1) / 3, T(1) / 3, T(1) / 3, T(0),     T(1) / 3, T(1) / 3,
+           T(1) / 3, T(0),     T(1) / 3, T(1) / 3, T(1) / 3, T(0)};
+
     auto shape = element.tabulate_shape(1, nq);
     std::vector<T> table(
         std::accumulate(shape.begin(), shape.end(), 1, std::multiplies<int>()));
@@ -89,7 +89,7 @@ int main(int argc, char* argv[])
 
     // Prepare facet data on CPU
     std::span<const T> phi(table.begin(), table.size());
-    auto [normals, detJ] = compute_facet_normals(*msh, phi);
+    auto [normals, detJ, cell_to_facet] = compute_facet_normals(*msh, phi);
     int nfacets = msh->topology()->index_map(tdim - 1)->size_local();
     std::vector<std::int32_t> facet_to_cell_0(nfacets * 2, -1);
     std::vector<std::int32_t> facet_list_0;
@@ -117,10 +117,16 @@ int main(int argc, char* argv[])
     // -----------------------------------------------------------------------
     // Finite element spaces
     //   V : DG0 scalar  (piecewise-constant solution)
-    //   W : DG0 vector  (advecting velocity, 2 components)
+    //   W : DG1 vector  (advecting velocity, 2 components)
     // -----------------------------------------------------------------------
     auto elem_dg0 = basix::create_element<U>(
         basix::element::family::P, basix::cell::type::tetrahedron, 0,
+        basix::element::lagrange_variant::unset,
+        basix::element::dpc_variant::unset,
+        /* discontinuous = */ true);
+
+    auto elem_dg1 = basix::create_element<U>(
+        basix::element::family::P, basix::cell::type::tetrahedron, 1,
         basix::element::lagrange_variant::unset,
         basix::element::dpc_variant::unset,
         /* discontinuous = */ true);
@@ -133,7 +139,7 @@ int main(int argc, char* argv[])
     auto W
         = std::make_shared<fem::FunctionSpace<U>>(fem::create_functionspace<U>(
             msh, std::make_shared<fem::FiniteElement<U>>(
-                     elem_dg0, std::vector<std::size_t>{3})));
+                     elem_dg1, std::vector<std::size_t>{3})));
 
     // -----------------------------------------------------------------------
     // Functions
@@ -183,7 +189,6 @@ int main(int argc, char* argv[])
     // Constants
     // -----------------------------------------------------------------------
     auto dt_const = std::make_shared<fem::Constant<T>>(T(dt));
-    auto w0_const = std::make_shared<fem::Constant<T>>(T(1));
 
     // -----------------------------------------------------------------------
     // Variational forms
@@ -191,9 +196,9 @@ int main(int argc, char* argv[])
     //   m_form : mass-matrix diagonal (cell integral of c_one / dt)
     // -----------------------------------------------------------------------
     // Single-domain problems pass an empty entity_maps vector.
-    fem::Form<T> L_form = fem::create_form<T>(
-        *form_dg_convect_L, {V}, {{"u_n", u_n}, {"w", w}},
-        {{"delta_t", dt_const}, {"w0", w0_const}}, {}, {});
+    fem::Form<T> L_form
+        = fem::create_form<T>(*form_dg_convect_L, {V}, {{"u_n", u_n}, {"w", w}},
+                              {{"delta_t", dt_const}}, {}, {});
 
     fem::Form<T> m_form = fem::create_form<T>(*form_dg_convect_m, {V}, {},
                                               {{"delta_t", dt_const}}, {}, {});
@@ -242,30 +247,34 @@ int main(int argc, char* argv[])
     for (int step = 0; step < num_steps; ++step)
     {
       std::cout << step << "\n";
-      w0_const->value[0] = sin(static_cast<double>(step)
-                               / static_cast<double>(num_steps) * M_PI * 4);
-
       t += dt;
 
-      // Run kernel on GPU
-      thrust::fill(b_device.array().begin(), b_device.array().end(), T(0));
-      run_dg0_convection(b_device.array(), un_device.array(), w_device.array(),
-                         phi_device, normals, detJ, facet_to_cell, facet_list,
-                         cell_list, dt);
-
-      // // Assemble RHS
-      // std::ranges::fill(b.array(), T(0));
-      // fem::assemble_vector(b.array(), L_form);
-      // b.scatter_rev(std::plus<T>());
-
-      // // Diagonal solve: u_new[i] = b[i] / M[i]
       auto& u_arr = u_n->x()->array();
-      // std::ranges::transform(std::views::iota(std::size_t(0), nlocal),
-      //                        u_arr.begin(), [&](std::size_t i)
-      //                        { return inv_M[i] * b.array()[i]; });
 
-      // // Scatter updated local values to ghost DOFs
-      // u_n->x()->scatter_fwd();
+      if (output_gpu)
+      {
+        // Run kernel on GPU
+        thrust::fill(b_device.array().begin(), b_device.array().end(), T(0));
+        run_dg0_convection(b_device.array(), un_device.array(),
+                           w_device.array(), phi_device, normals, detJ,
+                           facet_to_cell, cell_to_facet, facet_list, cell_list,
+                           dt);
+      }
+      else
+      {
+        // Assemble RHS
+        std::ranges::fill(b.array(), T(0));
+        fem::assemble_vector(b.array(), L_form);
+        b.scatter_rev(std::plus<T>());
+
+        // Diagonal solve: u_new[i] = b[i] / M[i]
+        std::ranges::transform(std::views::iota(std::size_t(0), nlocal),
+                               u_arr.begin(), [&](std::size_t i)
+                               { return inv_M[i] * b.array()[i]; });
+
+        // Scatter updated local values to ghost DOFs
+        u_n->x()->scatter_fwd();
+      }
 
       if ((step + 1) % io_stride == 0)
       {
