@@ -76,7 +76,6 @@ int main(int argc, char* argv[])
     //   Facet 1 (opp. v1): centroid (  0, 1/3, 1/3)
     //   Facet 2 (opp. v2): centroid (1/3,   0, 1/3)
     //   Facet 3 (opp. v3): centroid (1/3, 1/3,   0)
-    // Note: use T(1)/3 not 1/3 — integer division would give 0.
     std::vector<T> qpoints
         = {T(1) / 3, T(1) / 3, T(1) / 3, T(0),     T(1) / 3, T(1) / 3,
            T(1) / 3, T(0),     T(1) / 3, T(1) / 3, T(1) / 3, T(0)};
@@ -86,6 +85,9 @@ int main(int argc, char* argv[])
         std::accumulate(shape.begin(), shape.end(), 1, std::multiplies<int>()));
     element.tabulate(1, qpoints, {nq, 3}, std::span(table));
     thrust::device_vector<T> phi_device(table.begin(), table.end());
+    for (int i = 0; i < 4; ++i)
+      std::cout << i << ": " << table[i * 3] << ", " << table[i * 3 + 1] << ", "
+                << table[i * 3 + 2] << "\n";
 
     // Prepare facet data on CPU
     std::span<const T> phi(table.begin(), table.size());
