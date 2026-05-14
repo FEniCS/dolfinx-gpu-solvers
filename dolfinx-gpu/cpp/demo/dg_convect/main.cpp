@@ -70,8 +70,17 @@ int main(int argc, char* argv[])
     // Tabulate basis function derivatives at facet midpoints
     auto element = msh->geometry().cmap();
     std::size_t nq = 4;
-    std::vector<T> qpoints = {0,     1 / 3, 1 / 3, 1 / 3, 0,     1 / 3,
-                              1 / 3, 1 / 3, 0,     1 / 3, 1 / 3, 1 / 3};
+    // One quadrature point per facet, at each facet's centroid.
+    // DOLFINx facet ordering: facet f is opposite vertex f.
+    //   Facet 0 (opp. v0): centroid (1/3, 1/3, 1/3)
+    //   Facet 1 (opp. v1): centroid (  0, 1/3, 1/3)
+    //   Facet 2 (opp. v2): centroid (1/3,   0, 1/3)
+    //   Facet 3 (opp. v3): centroid (1/3, 1/3,   0)
+    // Note: use T(1)/3 not 1/3 — integer division would give 0.
+    std::vector<T> qpoints = {T(1)/3, T(1)/3, T(1)/3,
+                              T(0),   T(1)/3, T(1)/3,
+                              T(1)/3, T(0),   T(1)/3,
+                              T(1)/3, T(1)/3, T(0)};
     auto shape = element.tabulate_shape(1, nq);
     std::vector<T> table(
         std::accumulate(shape.begin(), shape.end(), 1, std::multiplies<int>()));
