@@ -10,7 +10,7 @@
 # Spaces
 # ------
 #   V : DG0 (piecewise-constant) scalar  – solution u
-#   W : DG0 vector (2 components)        – advecting velocity w
+#   W : DG1 vector (2 components)        – advecting velocity w
 #
 # Forms
 # -----
@@ -54,7 +54,7 @@ mesh = Mesh(coord_element)
 # Finite element spaces
 # ---------------------------------------------------------------------------
 e   = element("DG", "tetrahedron", 0)           # scalar DG0
-e_w = element("DG", "tetrahedron", 0, shape=(3,))  # vector DG0 (3 components)
+e_w = element("DG", "tetrahedron", 1, shape=(3,))  # vector DG1 (3 components)
 
 V = FunctionSpace(mesh, e)
 W = FunctionSpace(mesh, e_w)
@@ -66,7 +66,6 @@ u   = TrialFunction(V)
 v   = TestFunction(V)
 
 u_n   = Coefficient(V)   # solution at the previous time step
-w0    = Constant(mesh)
 w     = Coefficient(W)   # advecting velocity field
 delta_t = Constant(mesh) # time-step size dt
 
@@ -78,7 +77,7 @@ n = FacetNormal(mesh)
 # lmbda = 1 on the outflow side of a facet, 0 on the inflow side.
 # For interior facets (dS) the restriction to '+'/'-' sides is handled by
 # the avg() and jump() operators below.
-lmbda = conditional(gt(dot(w0*w, n), 0), 1, 0)
+lmbda = conditional(gt(dot(w, n), 0), 1, 0)
 
 # ---------------------------------------------------------------------------
 # Form L – explicit Euler RHS
@@ -92,7 +91,7 @@ lmbda = conditional(gt(dot(w0*w, n), 0), 1, 0)
 # ---------------------------------------------------------------------------
 L = (
     inner(u_n / delta_t, v) * dx
-    - inner(2 * avg(lmbda * w0*w * u_n), jump(v, n)) * dS
+    - inner(2 * avg(lmbda * w * u_n), jump(v, n)) * dS
 )
 
 # ---------------------------------------------------------------------------

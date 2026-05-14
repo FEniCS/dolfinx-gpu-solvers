@@ -1,6 +1,7 @@
 
 #pragma once
 #include <cstdint>
+#include <thrust/device_vector.h>
 
 template <typename T>
 __global__ void compute_w_at_qp(const T* w_dof, const T* phi, T* w_q,
@@ -33,12 +34,13 @@ __global__ void compute_w_at_qp(const T* w_dof, const T* phi, T* w_q,
 
         for (int i = 0; i < nphi; ++i)
         {
+          int c0 = cglobal * nphi + i;
           T phi_val = phi[(f * nq + iq) * nphi + i];
 
           // Compute w at qp
-          w_q[f0 * 3] += w_dof[(cglobal * nphi + i) * 3] * phi_val;
-          w_q[f0 * 3 + 1] += w_dof[(cglobal * nphi + i) * 3 + 1] * phi_val;
-          w_q[f0 * 3 + 2] += w_dof[(cglobal * nphi + i) * 3 + 2] * phi_val;
+          w_q[f0 * 3] += w_dof[c0 * 3] * phi_val;
+          w_q[f0 * 3 + 1] += w_dof[c0 * 3 + 1] * phi_val;
+          w_q[f0 * 3 + 2] += w_dof[c0 * 3 + 2] * phi_val;
         }
       }
     }
@@ -108,6 +110,7 @@ template <typename ContainerT, typename ContainerI>
 void run_dg0_convection(ContainerT& b, ContainerT& u_n, const ContainerT& w,
                         const ContainerT& phi, const ContainerT& normals,
                         const ContainerT& detJ, const ContainerI& facet_to_cell,
+                        const ContainerI& cell_to_facet,
                         const ContainerI& facets, const ContainerI& cells,
                         double dt)
 {
@@ -117,6 +120,16 @@ void run_dg0_convection(ContainerT& b, ContainerT& u_n, const ContainerT& w,
   dim3 block_size(512);
   dim3 grid_size(facets.size() / block_size.x + 1);
 
+  // If w is constant, could move this outside loop
+  constexpr int nq = 1;
+  thrust::device_vector<T> w_q(facets.size() * 3 * nq);
+
+  grid_size = dim3(cells.size() / block_size.x + 1);
+  compute_w_at_qp<T><<<grid_size, block_size>>>(
+      w.data().get(), phi.data().get(), w_q.data().get(),
+      cell_to_facet.data().get(), cells.data().get(), cells.size());
+
+  grid_size = dim3(facets.size() / block_size.x + 1);
   dg0_convection<T><<<grid_size, block_size>>>(
       b.data().get(), u_n.data().get(), w.data().get(), phi.data().get(),
       normals.data().get(), facet_to_cell.data().get(), facets.data().get(),

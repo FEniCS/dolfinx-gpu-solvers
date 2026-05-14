@@ -28,6 +28,7 @@
 /// @return      Device vector of length num_facets*3 containing the packed
 ///              (nx, ny, nz) scaled outward normal for each global facet index.
 template <typename T>
-std::pair<thrust::device_vector<T>, thrust::device_vector<T>>
+std::tuple<thrust::device_vector<T>, thrust::device_vector<T>,
+           thrust::device_vector<std::int32_t>>
 compute_facet_normals(dolfinx::mesh::Mesh<double>& mesh,
                       std::span<const T> dphi);
