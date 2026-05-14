@@ -22,7 +22,7 @@
 #include <basix/finite-element.h>
 #include <dolfinx.h>
 #include <dolfinx/fem/Constant.h>
-#include <dolfinx/io/XDMFFile.h>
+#include <dolfinx/io/VTXWriter.h>
 #include <dolfinx/la/Vector.h>
 
 #include <algorithm>
@@ -234,16 +234,15 @@ int main(int argc, char* argv[])
     la::Vector<T, thrust::device_vector<T>> un_device(*(u_n->x()));
 
     // -----------------------------------------------------------------------
-    // Output file
+    // Output file (ADIOS2 / VTX format, produces u.bp)
     // -----------------------------------------------------------------------
-    io::XDMFFile xdmf(msh->comm(), "u.xdmf", "w");
-    xdmf.write_mesh(*msh);
+    io::VTXWriter<U> vtx(msh->comm(), "u.bp", {u_n});
 
     // -----------------------------------------------------------------------
     // Time-stepping loop
     // -----------------------------------------------------------------------
     double t = 0.0;
-    xdmf.write_function(*u_n, t);
+    vtx.write(t);
 
     bool output_gpu = true;
     for (int step = 0; step < num_steps; ++step)
@@ -283,11 +282,10 @@ int main(int argc, char* argv[])
         if (output_gpu)
           thrust::copy(un_device.array().begin(), un_device.array().end(),
                        u_arr.begin());
-        xdmf.write_function(*u_n, t);
+        vtx.write(t);
       }
     }
 
-    xdmf.close();
 
     // Print final L2 norm as a basic sanity check
     const T local_sq = std::transform_reduce(
