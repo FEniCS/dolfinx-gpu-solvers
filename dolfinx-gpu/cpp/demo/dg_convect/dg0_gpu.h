@@ -138,7 +138,7 @@ void run_dg0_convection(ContainerT& b, ContainerT& u_n, const ContainerT& w,
 
   grid_size = dim3(facets.size() / block_size.x + 1);
   dg0_convection<T><<<grid_size, block_size>>>(
-      b.data().get(), u_n.data().get(), w.data().get(), phi.data().get(),
+      b.data().get(), u_n.data().get(), w_q.data().get(), phi.data().get(),
       normals.data().get(), facet_to_cell.data().get(), facets.data().get(),
       facets.size());
 

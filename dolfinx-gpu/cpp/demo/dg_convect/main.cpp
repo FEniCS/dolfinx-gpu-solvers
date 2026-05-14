@@ -22,7 +22,7 @@
 #include <basix/finite-element.h>
 #include <dolfinx.h>
 #include <dolfinx/fem/Constant.h>
-#include <dolfinx/io/VTXWriter.h>
+#include <dolfinx/io/ADIOS2Writers.h>
 #include <dolfinx/la/Vector.h>
 
 #include <algorithm>
@@ -86,8 +86,8 @@ int main(int argc, char* argv[])
     element.tabulate(1, qpoints, {nq, 3}, std::span(table));
     thrust::device_vector<T> phi_device(table.begin(), table.end());
     for (int i = 0; i < 4; ++i)
-      std::cout << i << ": " << table[i * 3] << ", " << table[i * 3 + 1] << ", "
-                << table[i * 3 + 2] << "\n";
+      std::cout << i << ": " << table[i * 4] << ", " << table[i * 4 + 1] << ", "
+                << table[i * 4 + 2] << ", " << table[i * 4 + 3] << "\n";
 
     // Prepare facet data on CPU
     std::span<const T> phi(table.begin(), table.size());
@@ -184,6 +184,14 @@ int main(int argc, char* argv[])
 
     // Copy w to device
     la::Vector<T, thrust::device_vector<T>> w_device(*(w->x()));
+
+    for (int i = 0; i < 20; ++i)
+    {
+      std::cout << "Cell(" << i << ")=";
+      for (auto dof : W->dofmap()->cell_dofs(i))
+        std::cout << dof << " ";
+      std::cout << "\n";
+    }
 
     // -----------------------------------------------------------------------
 
@@ -285,7 +293,6 @@ int main(int argc, char* argv[])
         vtx.write(t);
       }
     }
-
 
     // Print final L2 norm as a basic sanity check
     const T local_sq = std::transform_reduce(
