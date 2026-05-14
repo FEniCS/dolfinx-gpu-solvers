@@ -1,4 +1,14 @@
 
+// GPU kernels for explicit DG0 upwind convection on tetrahedral meshes.
+//
+// Pipeline (launch in order):
+//   1. compute_w_at_qp  – evaluate P1 velocity w at one quadrature point per
+//                         local facet, stored cell-by-cell
+//   2. dg0_convection   – accumulate upwind flux into b using those values
+//   3. dg0_mass         – apply the explicit Euler update to u_n in-place
+//
+// run_dg0_convection is the host wrapper that sequences all three.
+
 #pragma once
 #include <cstdint>
 #include <thrust/device_vector.h>
@@ -10,12 +20,25 @@
 #include <hip/hip_runtime.h>
 #endif
 
-/// @brief compute w at quadrature points on facets
-/// @param w_dof w values at DoFs on cells
-/// @param phi basis function
-/// @param w_q w at quadrature points on facets (two per facet, one on each
-/// side)
-/// @param cells list of cells
+// Evaluate the P1 DG velocity field w at one quadrature point per local facet
+// of each cell, and store the results cell-by-cell.
+//
+// For cell cglobal and local facet f (0..3), the result is written to
+//   w_q[(cglobal*4 + f)*3 + d]  for spatial component d.
+//
+// This layout matches the combined cell+local-facet index used by
+// dg0_convection (c0f = cell << 2 | local_facet), so that each side of a
+// shared facet carries its own independent w evaluation.
+//
+// @param w_dof   P1 DG velocity DOFs, layout [(cell*4 + node)*3 + component].
+// @param phi     Basis function values at the facet quadrature points,
+//                layout [local_facet*4 + node], size 16 (4 facets x 4 nodes).
+//                For a P1 tet with one point per facet at the facet centroid:
+//                phi[f*4+i] = 1/3 for i != f, 0 for i == f.
+// @param w_q     Output, layout [(cell*4 + local_facet)*3 + component].
+//                Must be zero-initialised before the kernel is launched.
+// @param cells   List of cell indices to process.
+// @param n_cells Length of cells.
 template <typename T>
 __global__ void compute_w_at_qp(const T* w_dof, const T* phi, T* w_q,
                                 const std::int32_t* cells, int n_cells)
@@ -48,15 +71,26 @@ __global__ void compute_w_at_qp(const T* w_dof, const T* phi, T* w_q,
   }
 }
 
-/// @brief DG0 convection kernel
-/// @param b Output field
-/// @param u_n Input previous field
-/// @param w Velocity vector 3D
-/// @param phi Basis functions for u_n and w
-/// @param normals Facet normals (incl jacobian scaling)
-/// @param facet_to_cell (map from facet to cells)
-/// @param facets List of facets to use
-/// @param n_facets Length of facet list
+// Accumulate the upwind convective flux across each interior facet into b.
+//
+// For the two cells c0, c1 sharing a facet (c0 < c1, c0 owns the outward
+// normal), the upwind flux is:
+//   flux = max(w0.n, 0)*u_n[c0] + min(w1.n, 0)*u_n[c1]
+//   b[c0] -= flux;  b[c1] += flux;
+// where w0, w1 are the per-cell w values at the quadrature point on that
+// facet (from compute_w_at_qp), accessed via the combined cell+local-facet
+// index stored in facet_to_cell.
+//
+// @param b             RHS accumulator, length num_cells. Zero before launch.
+// @param u_n           DG0 solution at the previous time step.
+// @param w             Output of compute_w_at_qp, layout [(cell*4+lf)*3+d].
+// @param phi           Unused (reserved for higher-order extension).
+// @param normals       Scaled outward facet normals, layout [facet*3+d].
+//                      Magnitude encodes the facet area; points away from c0.
+// @param facet_to_cell Layout [facet*2]: packed {(c0<<2)|lf0, (c1<<2)|lf1},
+//                      c0 < c1. Cell index = value >> 2; local facet = value & 3.
+// @param facets        Interior facet global indices to process.
+// @param n_facets      Length of facets.
 template <typename T>
 __global__ void dg0_convection(T* b, const T* u_n, const T* w, const T* phi,
                                const T* normals,
@@ -98,9 +132,20 @@ __global__ void dg0_convection(T* b, const T* u_n, const T* w, const T* phi,
   atomicAdd(&b[c1], flux);
 }
 
-// Assemble RHS dx term and add to u_n
-// L = inner(u_n / dt, v) * dx
-// m = inner(1/dt, v) * dx
+// Apply the explicit Euler time update in-place:
+//   u_n[c] += b[c] * 6*dt / detJ[c]
+//
+// For DG0 the mass matrix is diagonal with M[c] = |T_c|/dt = detJ[c]/(6*dt),
+// so the full update u_new = u_old + b/M reduces to the above.
+// b contains only facet-flux contributions; the u_old*M/M = u_old term is
+// handled analytically.
+//
+// @param u_n    In/out: updated in-place.
+// @param dt     Time step size.
+// @param b      Facet flux RHS from dg0_convection.
+// @param detJ   Cell Jacobian determinants det(J) (not pre-divided by 6).
+// @param cells  Cell indices to update.
+// @param n_cells Length of cells.
 template <typename T>
 __global__ void dg0_mass(T* u_n, T dt, const T* b, const T* detJ,
                          const int* cells, int n_cells)
@@ -117,6 +162,12 @@ __global__ void dg0_mass(T* u_n, T dt, const T* b, const T* detJ,
   u_n[cglobal] = u_n[cglobal] + b[cglobal] * (T(6) * dt) / detJ[cglobal];
 }
 
+// Host wrapper: advance u_n by one explicit Euler convection step.
+// Launches compute_w_at_qp, dg0_convection, and dg0_mass in sequence,
+// with cudaDeviceSynchronize() between each launch.
+//
+// w_q is allocated internally as a temporary of size w.size() (one 3-vector
+// per cell per local facet). If w is time-independent this could be hoisted.
 template <typename ContainerT, typename ContainerI>
 void run_dg0_convection(ContainerT& b, ContainerT& u_n, const ContainerT& w,
                         const ContainerT& phi, const ContainerT& normals,
