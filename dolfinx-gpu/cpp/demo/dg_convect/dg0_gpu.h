@@ -71,18 +71,23 @@ __global__ void dg0_convection(T* b, const T* u_n, const T* w, const T* phi,
 
   // Facet-to-cell list must be pre-sorted on each facet so that c0 is always
   // lower index
+
+  // Get combined cell+local_facet index
+  std::int32_t c0f = facet_to_cell[fglobal * 2];
+  std::int32_t c1f = facet_to_cell[fglobal * 2 + 1];
   // Extract local facet indices from facet_to_cell (stored in lower two bits)
-  std::int32_t c0w = facet_to_cell[fglobal * 2];
-  std::int32_t c1w = facet_to_cell[fglobal * 2 + 1];
-  //  std::int32_t local_0 = c0 & 0x03;
-  //  std::int32_t local_1 = c1 & 0x03;
-  std::int32_t c0 = c0w >> 2;
-  std::int32_t c1 = c1w >> 2;
+  // if needed
+  //  std::int32_t flocal_0 = c0f & 0x03;
+  //  std::int32_t flocal_1 = c1f & 0x03;
+
+  // Get cell indices for DG0
+  std::int32_t c0 = c0f >> 2;
+  std::int32_t c1 = c1f >> 2;
 
   // Compute w.n on both sides of facet
   const T* n = normals + fglobal * 3;
-  const T* w0 = w + c0w * 3;
-  const T* w1 = w + c1w * 3;
+  const T* w0 = w + c0f * 3;
+  const T* w1 = w + c1f * 3;
   T w0n = n[0] * w0[0] + n[1] * w0[1] + n[2] * w0[2];
   T w1n = n[0] * w1[0] + n[1] * w1[1] + n[2] * w1[2];
 
