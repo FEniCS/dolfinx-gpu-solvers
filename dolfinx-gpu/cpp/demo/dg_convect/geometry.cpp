@@ -4,8 +4,7 @@
 // Compute facet normal/jacobians on each facet
 
 template <typename T>
-std::tuple<thrust::device_vector<T>, thrust::device_vector<T>,
-           thrust::device_vector<std::int32_t>>
+std::tuple<thrust::device_vector<T>, thrust::device_vector<T>>
 compute_facet_normals(dolfinx::mesh::Mesh<double>& mesh, std::span<const T> phi)
 {
   // Extract basis function derivatives from table (phi, phi_x, phi_y, phi_z)
@@ -18,7 +17,7 @@ compute_facet_normals(dolfinx::mesh::Mesh<double>& mesh, std::span<const T> phi)
   int num_cells = mesh.topology()->index_map(tdim)->size_local();
   int num_facets = mesh.topology()->index_map(tdim - 1)->size_local();
   constexpr int num_facets_per_cell = 4;
-  std::vector<std::int32_t> facet_list(num_cells * num_facets_per_cell, -1);
+  std::vector<std::int32_t> facet_list0(num_cells * num_facets_per_cell, -1);
   std::vector<bool> facet_tick(num_facets, false);
 
   // Tick off facets in increasing cell index order, ensuring lowest numbered
@@ -33,7 +32,7 @@ compute_facet_normals(dolfinx::mesh::Mesh<double>& mesh, std::span<const T> phi)
       {
         facet_tick[fidx] = true;
         std::int32_t idx = c * num_facets_per_cell + f;
-        facet_list[idx] = fidx;
+        facet_list0[idx] = fidx;
       }
     }
   }
@@ -94,7 +93,7 @@ compute_facet_normals(dolfinx::mesh::Mesh<double>& mesh, std::span<const T> phi)
     // Write normals only for facets this cell owns
     for (int f = 0; f < num_facets_per_cell; ++f)
     {
-      std::int32_t idx = facet_list[c * num_facets_per_cell + f];
+      std::int32_t idx = facet_list0[c * num_facets_per_cell + f];
       if (idx >= 0)
       {
         facet_jacobians[idx * 3] = n[f][0];
@@ -106,13 +105,10 @@ compute_facet_normals(dolfinx::mesh::Mesh<double>& mesh, std::span<const T> phi)
 
   return {
       thrust::device_vector<T>(facet_jacobians.begin(), facet_jacobians.end()),
-      thrust::device_vector<T>(detJ.begin(), detJ.end()),
-      thrust::device_vector<std::int32_t>(facet_list.begin(),
-                                          facet_list.end())};
+      thrust::device_vector<T>(detJ.begin(), detJ.end())};
 }
 
 template std::tuple<thrust::device_vector<double>,
-                    thrust::device_vector<double>,
-                    thrust::device_vector<std::int32_t>>
+                    thrust::device_vector<double>>
 compute_facet_normals(dolfinx::mesh::Mesh<double>& mesh,
                       std::span<const double> dphi);

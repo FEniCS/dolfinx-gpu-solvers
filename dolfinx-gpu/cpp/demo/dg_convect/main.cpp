@@ -91,11 +91,12 @@ int main(int argc, char* argv[])
 
     // Prepare facet data on CPU
     std::span<const T> phi(table.begin(), table.size());
-    auto [normals, detJ, cell_to_facet] = compute_facet_normals(*msh, phi);
+    auto [normals, detJ] = compute_facet_normals(*msh, phi);
     int nfacets = msh->topology()->index_map(tdim - 1)->size_local();
     std::vector<std::int32_t> facet_to_cell_0(nfacets * 2, -1);
     std::vector<std::int32_t> facet_list_0;
     auto f_to_c = msh->topology()->connectivity(tdim - 1, tdim);
+    auto c_to_f = msh->topology()->connectivity(tdim, tdim - 1);
     for (int i = 0; i < f_to_c->num_nodes(); ++i)
     {
       auto cells = f_to_c->links(i);
@@ -104,8 +105,26 @@ int main(int argc, char* argv[])
         facet_list_0.push_back(i);
         facet_to_cell_0[i * 2] = cells[0] < cells[1] ? cells[0] : cells[1];
         facet_to_cell_0[i * 2 + 1] = cells[0] < cells[1] ? cells[1] : cells[0];
+        std::span<const std::int32_t> f0
+            = c_to_f->links(facet_to_cell_0[i * 2]);
+        std::span<const std::int32_t> f1
+            = c_to_f->links(facet_to_cell_0[i * 2 + 1]);
+        for (std::int32_t j = 0; j < 4; ++j)
+        {
+          if (f0[j] == i)
+          {
+            facet_to_cell_0[i * 2] <<= 2;
+            facet_to_cell_0[i * 2] |= j;
+          }
+          if (f1[j] == i)
+          {
+            facet_to_cell_0[i * 2 + 1] <<= 2;
+            facet_to_cell_0[i * 2 + 1] |= j;
+          }
+        }
       }
     }
+
     thrust::device_vector<std::int32_t> facet_list(facet_list_0.begin(),
                                                    facet_list_0.end());
     thrust::device_vector<std::int32_t> facet_to_cell(facet_to_cell_0.begin(),
@@ -185,14 +204,6 @@ int main(int argc, char* argv[])
     // Copy w to device
     la::Vector<T, thrust::device_vector<T>> w_device(*(w->x()));
 
-    for (int i = 0; i < 20; ++i)
-    {
-      std::cout << "Cell(" << i << ")=";
-      for (auto dof : W->dofmap()->cell_dofs(i))
-        std::cout << dof << " ";
-      std::cout << "\n";
-    }
-
     // -----------------------------------------------------------------------
 
     // -----------------------------------------------------------------------
@@ -266,8 +277,7 @@ int main(int argc, char* argv[])
         thrust::fill(b_device.array().begin(), b_device.array().end(), T(0));
         run_dg0_convection(b_device.array(), un_device.array(),
                            w_device.array(), phi_device, normals, detJ,
-                           facet_to_cell, cell_to_facet, facet_list, cell_list,
-                           dt);
+                           facet_to_cell, facet_list, cell_list, dt);
       }
       else
       {
