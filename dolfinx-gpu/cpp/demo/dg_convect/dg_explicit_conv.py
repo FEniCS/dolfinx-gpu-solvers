@@ -26,7 +26,7 @@ def marker_inflow(x):
 # Simulation parameters
 n = 64
 k = 0  # Polynomial degree should be 0 for DG with forward Euler
-t_end = 5.0
+t_end = 1.0
 num_time_steps = 1000
 
 # Velocity field components
@@ -38,7 +38,7 @@ msh = xdmf.read_mesh()
 # msh = mesh.create_unit_square(MPI.COMM_WORLD, n, n, mesh.CellType.triangle)
 
 V = fem.functionspace(msh, ("Discontinuous Lagrange", k))
-W = fem.functionspace(msh, ("DG", 0, (2, )))
+W = fem.functionspace(msh, ("DG", 1, (2, )))
 
 u, v = ufl.TrialFunction(V), ufl.TestFunction(V)
 
