@@ -16,6 +16,7 @@
 // Space: DG0 (piecewise-constant) for the scalar solution u
 //        DG0 vector (2 components) for the advecting velocity w
 
+#include "block_diag.h"
 #include "dg0_gpu.h"
 #include "dg_convect.h"
 #include "geometry.h"
