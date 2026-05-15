@@ -9,7 +9,7 @@
 #
 # Spaces
 # ------
-#   V : DG0 (piecewise-constant) scalar  – solution u
+#   V : DG1 (piecewise-constant) scalar  – solution u
 #   W : DG1 vector (2 components)        – advecting velocity w
 #
 # Forms
@@ -53,7 +53,7 @@ mesh = Mesh(coord_element)
 # ---------------------------------------------------------------------------
 # Finite element spaces
 # ---------------------------------------------------------------------------
-e   = element("DG", "tetrahedron", 0)           # scalar DG0
+e   = element("DG", "tetrahedron", 1)           # scalar DG1
 e_w = element("DG", "tetrahedron", 1, shape=(3,))  # vector DG1 (3 components)
 
 V = FunctionSpace(mesh, e)
@@ -96,11 +96,5 @@ L = (
 
 # ---------------------------------------------------------------------------
 # Form m – mass-matrix diagonal
-#   Assembling gives the vector  m_i = |T_i| / dt
-#   which is the diagonal entry of the bilinear mass form
-#       a(u, v) = inner(u / delta_t, v) * dx
-#   for a DG0 space (each basis function is non-zero on exactly one cell).
 # ---------------------------------------------------------------------------
-m = inner(1.0 / delta_t, v) * dx
-
-forms = [L, m]
+a = inner(u / delta_t, v) * dx

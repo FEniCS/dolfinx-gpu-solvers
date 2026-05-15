@@ -55,7 +55,7 @@ add_executable(${PROJECT_NAME}
   ${CMAKE_CURRENT_BINARY_DIR}/dg_convect.c
 )
 
-target_link_libraries(${PROJECT_NAME} dolfinx)
+target_link_libraries(${PROJECT_NAME} dolfinx cublas)
 
 set(CMAKE_CXX_EXTENSIONS OFF)
 target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_20)

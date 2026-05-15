@@ -155,7 +155,7 @@ int main(int argc, char* argv[])
 
     auto V
         = std::make_shared<fem::FunctionSpace<U>>(fem::create_functionspace<U>(
-            msh, std::make_shared<fem::FiniteElement<U>>(elem_dg0)));
+            msh, std::make_shared<fem::FiniteElement<U>>(elem_dg1)));
 
     // Vector DG0: same scalar element, value_shape = {2}
     auto W
@@ -222,7 +222,7 @@ int main(int argc, char* argv[])
         = fem::create_form<T>(*form_dg_convect_L, {V}, {{"u_n", u_n}, {"w", w}},
                               {{"delta_t", dt_const}}, {}, {});
 
-    fem::Form<T> m_form = fem::create_form<T>(*form_dg_convect_m, {V}, {},
+    fem::Form<T> a_form = fem::create_form<T>(*form_dg_convect_a, {V, V}, {},
                                               {{"delta_t", dt_const}}, {}, {});
 
     // -----------------------------------------------------------------------
@@ -233,16 +233,13 @@ int main(int argc, char* argv[])
     const int bs = V->dofmap()->index_map_bs();
     const std::size_t nlocal = map->size_local();
 
-    la::Vector<T> M(map, bs);
-    std::ranges::fill(M.array(), T(0));
-    fem::assemble_vector(M.array(), m_form);
-    M.scatter_rev(std::plus<T>());
+    thrust::device_vector<T> block_mass = assemble_dg(a_form, {});
 
-    // Inverse diagonal for the explicit solve  u_new = b / M
-    // array() returns std::vector<T>&; wrap in std::span to use .first().
-    std::vector<T> inv_M(nlocal);
-    std::ranges::transform(std::span(M.array()).first(nlocal), inv_M.begin(),
-                           [](T v) { return T(1) / v; });
+    std::vector<T> bm(16);
+    thrust::copy(block_mass.begin(), block_mass.begin() + 16, bm.begin());
+    for (auto q : bm)
+      std::cout << q << " ";
+    std::cout << "\n";
 
     // -----------------------------------------------------------------------
     // RHS vector (re-assembled every step)
@@ -252,6 +249,10 @@ int main(int argc, char* argv[])
     // Copy vectors to device
     la::Vector<T, thrust::device_vector<T>> b_device(b);
     la::Vector<T, thrust::device_vector<T>> un_device(*(u_n->x()));
+
+    solve_block_diag_system(block_mass, b_device, un_device);
+
+    exit(0);
 
     // -----------------------------------------------------------------------
     // Output file (ADIOS2 / VTX format, produces u.bp)
@@ -286,11 +287,6 @@ int main(int argc, char* argv[])
         std::ranges::fill(b.array(), T(0));
         fem::assemble_vector(b.array(), L_form);
         b.scatter_rev(std::plus<T>());
-
-        // Diagonal solve: u_new[i] = b[i] / M[i]
-        std::ranges::transform(std::views::iota(std::size_t(0), nlocal),
-                               u_arr.begin(), [&](std::size_t i)
-                               { return inv_M[i] * b.array()[i]; });
 
         // Scatter updated local values to ghost DOFs
         u_n->x()->scatter_fwd();
