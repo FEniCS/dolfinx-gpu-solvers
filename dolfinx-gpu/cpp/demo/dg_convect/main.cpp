@@ -17,7 +17,7 @@
 //        DG0 vector (2 components) for the advecting velocity w
 
 #include "block_diag.h"
-#include "dg0_gpu.h"
+#include "dg1_gpu.h"
 #include "dg_convect.h"
 #include "geometry.h"
 #include <basix/finite-element.h>
@@ -235,12 +235,6 @@ int main(int argc, char* argv[])
 
     thrust::device_vector<T> block_mass = assemble_dg(a_form, {});
 
-    std::vector<T> bm(16);
-    thrust::copy(block_mass.begin(), block_mass.begin() + 16, bm.begin());
-    for (auto q : bm)
-      std::cout << q << " ";
-    std::cout << "\n";
-
     // -----------------------------------------------------------------------
     // RHS vector (re-assembled every step)
     // -----------------------------------------------------------------------
@@ -249,10 +243,6 @@ int main(int argc, char* argv[])
     // Copy vectors to device
     la::Vector<T, thrust::device_vector<T>> b_device(b);
     la::Vector<T, thrust::device_vector<T>> un_device(*(u_n->x()));
-
-    solve_block_diag_system(block_mass, b_device, un_device);
-
-    exit(0);
 
     // -----------------------------------------------------------------------
     // Output file (ADIOS2 / VTX format, produces u.bp)
@@ -276,10 +266,48 @@ int main(int argc, char* argv[])
       if (output_gpu)
       {
         // Run kernel on GPU
+        // k = M⁻¹R(un)
+        thrust::device_vector<T> k(un_device.array().size());
         thrust::fill(b_device.array().begin(), b_device.array().end(), T(0));
-        run_dg0_convection(b_device.array(), un_device.array(),
+        run_dg1_convection(b_device.array(), un_device.array(),
                            w_device.array(), phi_device, normals, detJ,
                            facet_to_cell, facet_list, cell_list, dt);
+        solve_block_diag_system(block_mass, b_device.array(), k);
+
+        // u1 = un + k * dt
+        thrust::device_vector<T> u1(un_device.array().size());
+        thrust::transform(un_device.array().begin(), un_device.array().end(),
+                          k.begin(), u1.begin(),
+                          [dt] __device__(T x, T y) { return x + y * dt; });
+
+        // k = M⁻¹R(u1)
+        thrust::fill(b_device.array().begin(), b_device.array().end(), T(0));
+        run_dg1_convection(b_device.array(), u1, w_device.array(), phi_device,
+                           normals, detJ, facet_to_cell, facet_list, cell_list,
+                           dt);
+        solve_block_diag_system(block_mass, b_device.array(), k);
+
+        // u1 = 0.75 * un + 0.25 * (u1 + k * dt)
+        thrust::transform(u1.begin(), u1.end(), k.begin(), u1.begin(),
+                          [dt] __device__(T x, T y) { return x + y * dt; });
+        thrust::transform(un_device.array().begin(), un_device.array().end(),
+                          u1.begin(), u1.begin(), [] __device__(T x, T y)
+                          { return 0.75 * x + 0.25 * y; });
+
+        // k = M⁻¹R(u1)
+        thrust::fill(b_device.array().begin(), b_device.array().end(), T(0));
+        run_dg1_convection(b_device.array(), u1, w_device.array(), phi_device,
+                           normals, detJ, facet_to_cell, facet_list, cell_list,
+                           dt);
+        solve_block_diag_system(block_mass, b_device.array(), k);
+
+        // un = (1.0/3.0) * un + (2.0/3.0) * (u1 + k * dt)
+        thrust::transform(u1.begin(), u1.end(), k.begin(), u1.begin(),
+                          [dt] __device__(T x, T y) { return x + y * dt; });
+        thrust::transform(un_device.array().begin(), un_device.array().end(),
+                          u1.begin(), un_device.array().begin(),
+                          [] __device__(T x, T y)
+                          { return (x + 2.0 * y) / 3.0; });
       }
       else
       {
