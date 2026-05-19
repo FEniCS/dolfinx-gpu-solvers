@@ -33,7 +33,7 @@
 // @param b             RHS accumulator, length num_cells. Zero before launch.
 // @param u_n           DG1 solution at the previous time step.
 // @param w             Velocity w as a DG1 function
-// @param phi           Unused (reserved for higher-order extension).
+// @param phi           Basis function evaluated at quadrature points on facets
 // @param normals       Scaled outward facet normals, layout [facet*3+d].
 //                      Magnitude encodes the facet area; points away from c0.
 // @param facet_to_cell Layout [facet*2]: packed {(c0<<2)|lf0, (c1<<2)|lf1},
@@ -59,94 +59,86 @@ __global__ void dg1_convection(T* b, const T* u_n, const T* w, const T* phi,
   // Get combined cell+local_facet index
   std::int32_t c0f = facet_to_cell[fglobal * 2];
   std::int32_t c1f = facet_to_cell[fglobal * 2 + 1];
-  // Extract local facet indices from facet_to_cell (stored in lower two bits)
-  std::int32_t flocal_0 = c0f & 0x03;
-  std::int32_t flocal_1 = c1f & 0x03;
+  // Extract local facet indices and perms from facet_to_cell (stored in lower
+  // eight bits)
+  std::int8_t flocal_0 = c0f & 0x03;
+  std::int8_t fperm_0 = (c0f >> 2) & 0x3F;
+  std::int8_t flocal_1 = c1f & 0x03;
+  std::int8_t fperm_1 = (c1f >> 2) & 0x3F;
   // Get cell indices
-  std::int32_t c0 = c0f >> 2;
-  std::int32_t c1 = c1f >> 2;
+  std::int32_t c0 = c0f >> 8;
+  std::int32_t c1 = c1f >> 8;
+
+  // Facet permutations for 6 point quadrature
+  constexpr std::int8_t qperm[36]
+      = {0, 1, 2, 3, 4, 5, 2, 4, 0, 5, 1, 3, 3, 5, 1, 4, 0, 2,
+         5, 3, 4, 1, 2, 0, 4, 2, 5, 0, 3, 1, 1, 0, 3, 2, 5, 4};
+  const std::int8_t* qp0 = qperm + fperm_0 * 6;
+  const std::int8_t* qp1 = qperm + fperm_1 * 6;
 
   // Number of DoFs per cell (DG1)
-  int nphi = 4;
+  constexpr int ndof = 4;
+  // Number of quadrature points per facet
+  constexpr int nq = 6;
 
-  // Compute w at quadrature point cell0
-  T w0[3] = {0};
-  for (int i = 0; i < nphi; ++i)
-  {
-    T phi_i = phi[flocal_0 * nphi + i];
-    w0[0] += w[c0 * nphi * 3] * phi_i;
-    w0[1] += w[c0 * nphi * 3 + 1] * phi_i;
-    w0[2] += w[c0 * nphi * 3 + 2] * phi_i;
-  }
-
-  // Compute w at quadrature point cell1
-  T w1[3] = {0};
-  for (int i = 0; i < nphi; ++i)
-  {
-    T phi_i = phi[flocal_1 * nphi + i];
-    w1[0] += w[c1 * nphi * 3] * phi_i;
-    w1[1] += w[c1 * nphi * 3 + 1] * phi_i;
-    w1[2] += w[c1 * nphi * 3 + 2] * phi_i;
-  }
-
-  // Compute w.n on both sides of facet at single quadrature point
   const T* n = normals + fglobal * 3;
-  T w0n = n[0] * w0[0] + n[1] * w0[1] + n[2] * w0[2];
-  T w1n = n[0] * w1[0] + n[1] * w1[1] + n[2] * w1[2];
 
-  // Get u value at quadrature point on facet, cell0
-  const T* u0 = u_n + c0 * nphi;
-  T uf0 = 0;
-  for (int i = 0; i < nphi; ++i)
-    uf0 += u0[i] * phi[flocal_0 * nphi + i];
-
-  // Get u value at quadrature point on facet, cell1
-  const T* u1 = u_n + c1 * nphi;
-  T uf1 = 0;
-  for (int i = 0; i < nphi; ++i)
-    uf1 += u1[i] * phi[flocal_1 * nphi + i];
-
-  // Apply upwinding
-  T flux = fmax(w0n, 0) * uf0 + fmin(w1n, 0) * uf1;
-
-  // Locate b in output data
-  T* b0 = b + c0 * nphi;
-  T* b1 = b + c1 * nphi;
-  for (int i = 0; i < nphi; ++i)
+  T flux[nq];
+  for (int iq = 0; iq < nq; ++iq)
   {
-    atomicAdd(&b0[i], -phi[flocal_0 * nphi + i] * flux);
-    atomicAdd(&b1[i], phi[flocal_1 * nphi + i] * flux);
+    // Compute w.n at quadrature points on facet of cell0
+    T w0n = 0;
+    for (int i = 0; i < ndof; ++i)
+    {
+      const T* w0 = w + (c0 * ndof + i) * 3;
+      T phi_i = phi[flocal_0 * ndof * nq + qp0[iq] * ndof + i];
+      w0n += w0[0] * phi_i * n[0];
+      w0n += w0[1] * phi_i * n[1];
+      w0n += w0[2] * phi_i * n[2];
+    }
+
+    // Compute w.n at quadrature points on facet of cell1
+    T w1n = 0;
+    for (int i = 0; i < ndof; ++i)
+    {
+      const T* w1 = w + (c1 * ndof + i) * 3;
+      T phi_i = phi[flocal_1 * ndof * nq + qp1[iq] * ndof + i];
+      w1n += w1[0] * phi_i * n[0];
+      w1n += w1[1] * phi_i * n[1];
+      w1n += w1[2] * phi_i * n[2];
+    }
+
+    // Get u value at quadrature points on facet, cell0
+    const T* u0 = u_n + c0 * ndof;
+    T uf0 = 0;
+    for (int i = 0; i < ndof; ++i)
+      uf0 += u0[i] * phi[flocal_0 * ndof * nq + qp0[iq] * ndof + i];
+
+    // Get u value at quadrature points on facet, cell1
+    const T* u1 = u_n + c1 * ndof;
+    T uf1 = 0;
+    for (int i = 0; i < ndof; ++i)
+      uf1 += u1[i] * phi[flocal_1 * ndof * nq + qp1[iq] * ndof + i];
+
+    // Apply upwinding at quadrature points
+    flux[iq] = fmax(w0n, 0) * uf0 + fmin(w1n, 0) * uf1;
   }
-}
 
-// Apply the explicit Euler time update in-place:
-//   u_n[c] += b[c] * 6*dt / detJ[c]
-//
-// For DG0 the mass matrix is diagonal with M[c] = |T_c|/dt = detJ[c]/(6*dt),
-// so the full update u_new = u_old + b/M reduces to the above.
-// b contains only facet-flux contributions; the u_old*M/M = u_old term is
-// handled analytically.
-//
-// @param u_n    In/out: updated in-place.
-// @param dt     Time step size.
-// @param b      Facet flux RHS from dg0_convection.
-// @param detJ   Cell Jacobian determinants det(J) (not pre-divided by 6).
-// @param cells  Cell indices to update.
-// @param n_cells Length of cells.
-template <typename T>
-__global__ void dg1_mass(T* u_n, T dt, const T* b, const T* detJ,
-                         const int* cells, int n_cells)
-{
-  // Load a set of cells
-  int idx = blockIdx.x * blockDim.x + threadIdx.x;
-  if (idx >= n_cells)
-    return;
-  int cglobal = cells[idx];
-
-  // b_total = (u_n * detJ / (6*dt)) + b_facet
-  // M_diag  = detJ / (6*dt)
-  // u_new   = b_total / M_diag = b_total * (6*dt) / detJ
-  u_n[cglobal] = u_n[cglobal] + b[cglobal] * (T(6) * dt) / detJ[cglobal];
+  // Locate b cell dofs in output data
+  T* b0 = b + c0 * ndof;
+  T* b1 = b + c1 * ndof;
+  for (int i = 0; i < ndof; ++i)
+  {
+    T b0val = 0;
+    T b1val = 0;
+    for (int iq = 0; iq < nq; ++iq)
+    {
+      b0val -= phi[flocal_0 * ndof * nq + qp0[iq] * ndof + i] * flux[iq];
+      b1val += phi[flocal_1 * ndof * nq + qp1[iq] * ndof + i] * flux[iq];
+    }
+    atomicAdd(&b0[i], b0val);
+    atomicAdd(&b1[i], b1val);
+  }
 }
 
 // Host wrapper: advance u_n by one explicit Euler convection step.
@@ -168,16 +160,12 @@ void run_dg1_convection(ContainerT& b, ContainerT& u_n, const ContainerT& w,
   dim3 block_size(512);
   dim3 grid_size(facets.size() / block_size.x + 1);
 
-  grid_size = dim3(facets.size() / block_size.x + 1);
+  std::cout << "call dg1_convection:" << facets.size() << "\n";
+
   dg1_convection<T><<<grid_size, block_size>>>(
       b.data().get(), u_n.data().get(), w.data().get(), phi.data().get(),
       normals.data().get(), facet_to_cell.data().get(), facets.data().get(),
       facets.size());
 
   cudaDeviceSynchronize();
-
-  grid_size = dim3(cells.size() / block_size.x + 1);
-  dg1_mass<T><<<grid_size, block_size>>>(u_n.data().get(), dt, b.data().get(),
-                                         detJ.data().get(), cells.data().get(),
-                                         cells.size());
 }

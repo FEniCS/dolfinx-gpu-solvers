@@ -1,21 +1,42 @@
 
 #include "geometry.h"
+#include <basix/finite-element.h>
 
 // Compute facet normal/jacobians on each facet
 
 template <typename T>
 std::tuple<thrust::device_vector<T>, thrust::device_vector<T>>
-compute_facet_normals(dolfinx::mesh::Mesh<double>& mesh, std::span<const T> phi)
+compute_facet_normals(dolfinx::mesh::Mesh<T>& mesh)
 {
+  auto element = mesh.geometry().cmap();
+
+  // Only need one point, as P1 geometry constant over cell
+  constexpr int nq = 1;
+  std::vector<T> qpoints = {0.25, 0.25, 0.25};
+  auto shape = element.tabulate_shape(1, 1);
+  std::vector<T> table(
+      std::accumulate(shape.begin(), shape.end(), 1, std::multiplies<int>()));
+  element.tabulate(1, qpoints, {nq, 3}, std::span(table));
+  // Suppress near-zeros
+  std::for_each(table.begin(), table.end(),
+                [](T& q) { q = (std::abs(q) < 1e-15) ? 0.0 : q; });
+
   // Extract basis function derivatives from table (phi, phi_x, phi_y, phi_z)
-  std::span<const T> dphi(std::next(phi.begin(), phi.size() / 4),
-                          phi.size() * 3 / 4);
+  std::span<const T> dphi(std::next(table.begin(), table.size() / 4),
+                          table.size() * 3 / 4);
+
+  std::cout << "dphi = ";
+  for (auto q : dphi)
+    std::cout << q << " ";
+  std::cout << "\n";
+
   int tdim = mesh.topology()->dim();
   mesh.topology()->create_connectivity(tdim, tdim - 1);
   auto c_to_f = mesh.topology()->connectivity(tdim, tdim - 1);
 
   int num_cells = mesh.topology()->index_map(tdim)->size_local();
   int num_facets = mesh.topology()->index_map(tdim - 1)->size_local();
+
   constexpr int num_facets_per_cell = 4;
   std::vector<std::int32_t> facet_list0(num_cells * num_facets_per_cell, -1);
   std::vector<bool> facet_tick(num_facets, false);
@@ -60,15 +81,14 @@ compute_facet_normals(dolfinx::mesh::Mesh<double>& mesh, std::span<const T> phi)
       for (int j = 0; j < 3; ++j)
         coord_dofs[i][j] = xgeom[dofmap(c, i) * 3 + j];
 
-    // For a linear tet, J is constant across the cell. Compute it once using
-    // facet f=0's dphi (all facets give the same result).
+    // For a linear tet, J is constant across the cell.
     T J[3][3];
     for (int i = 0; i < 3; i++)
       for (int j = 0; j < 3; j++)
       {
         J[i][j] = 0.0;
         for (int k = 0; k < 4; k++)
-          J[i][j] += coord_dofs[k][i] * dphi[j * 16 + k]; // f=0
+          J[i][j] += coord_dofs[k][i] * dphi[j * 4 + k];
       }
 
     detJ[c] = J[0][0] * (J[1][1] * J[2][2] - J[1][2] * J[2][1])
@@ -110,5 +130,4 @@ compute_facet_normals(dolfinx::mesh::Mesh<double>& mesh, std::span<const T> phi)
 
 template std::tuple<thrust::device_vector<double>,
                     thrust::device_vector<double>>
-compute_facet_normals(dolfinx::mesh::Mesh<double>& mesh,
-                      std::span<const double> dphi);
+compute_facet_normals(dolfinx::mesh::Mesh<double>& mesh);

@@ -21,6 +21,7 @@
 #include "dg_convect.h"
 #include "geometry.h"
 #include <basix/finite-element.h>
+#include <basix/quadrature.h>
 #include <dolfinx.h>
 #include <dolfinx/fem/Constant.h>
 #include <dolfinx/io/ADIOS2Writers.h>
@@ -67,60 +68,42 @@ int main(int argc, char* argv[])
     msh->topology_mutable()->create_entities(tdim - 1);
     msh->topology_mutable()->create_connectivity(tdim - 1, tdim);
     msh->topology_mutable()->create_connectivity(tdim, tdim - 1);
+    msh->topology_mutable()->create_entity_permutations();
+    auto [normals, detJ] = compute_facet_normals(*msh);
 
-    // Tabulate basis function derivatives at facet midpoints
-    auto element = msh->geometry().cmap();
-    std::size_t nq = 4;
-    // One quadrature point per facet, at each facet's centroid.
-    // DOLFINx facet ordering: facet f is opposite vertex f.
-    //   Facet 0 (opp. v0): centroid (1/3, 1/3, 1/3)
-    //   Facet 1 (opp. v1): centroid (  0, 1/3, 1/3)
-    //   Facet 2 (opp. v2): centroid (1/3,   0, 1/3)
-    //   Facet 3 (opp. v3): centroid (1/3, 1/3,   0)
-    std::vector<T> qpoints
-        = {T(1) / 3, T(1) / 3, T(1) / 3, T(0),     T(1) / 3, T(1) / 3,
-           T(1) / 3, T(0),     T(1) / 3, T(1) / 3, T(1) / 3, T(0)};
-
-    auto shape = element.tabulate_shape(1, nq);
-    std::vector<T> table(
-        std::accumulate(shape.begin(), shape.end(), 1, std::multiplies<int>()));
-    element.tabulate(1, qpoints, {nq, 3}, std::span(table));
-    thrust::device_vector<T> phi_device(table.begin(), table.end());
-    for (int i = 0; i < 4; ++i)
-      std::cout << i << ": " << table[i * 4] << ", " << table[i * 4 + 1] << ", "
-                << table[i * 4 + 2] << ", " << table[i * 4 + 3] << "\n";
-
-    // Prepare facet data on CPU
-    std::span<const T> phi(table.begin(), table.size());
-    auto [normals, detJ] = compute_facet_normals(*msh, phi);
     int nfacets = msh->topology()->index_map(tdim - 1)->size_local();
+    int ncells = msh->topology()->index_map(tdim)->size_local();
+    if (ncells > 16000000)
+      throw std::runtime_error("Need to use 64-bit for facet_to_cell");
     std::vector<std::int32_t> facet_to_cell_0(nfacets * 2, -1);
     std::vector<std::int32_t> facet_list_0;
     auto f_to_c = msh->topology()->connectivity(tdim - 1, tdim);
     auto c_to_f = msh->topology()->connectivity(tdim, tdim - 1);
+    const std::vector<std::uint8_t>& fperm
+        = msh->topology()->get_facet_permutations();
     for (int i = 0; i < f_to_c->num_nodes(); ++i)
     {
       auto cells = f_to_c->links(i);
       if (cells.size() == 2)
       {
         facet_list_0.push_back(i);
-        facet_to_cell_0[i * 2] = cells[0] < cells[1] ? cells[0] : cells[1];
-        facet_to_cell_0[i * 2 + 1] = cells[0] < cells[1] ? cells[1] : cells[0];
-        std::span<const std::int32_t> f0
-            = c_to_f->links(facet_to_cell_0[i * 2]);
-        std::span<const std::int32_t> f1
-            = c_to_f->links(facet_to_cell_0[i * 2 + 1]);
+        std::int32_t c0 = cells[0] < cells[1] ? cells[0] : cells[1];
+        std::int32_t c1 = cells[0] < cells[1] ? cells[1] : cells[0];
+        std::span<const std::int32_t> f0 = c_to_f->links(c0);
+        std::span<const std::int32_t> f1 = c_to_f->links(c1);
         for (std::int32_t j = 0; j < 4; ++j)
         {
           if (f0[j] == i)
           {
-            facet_to_cell_0[i * 2] <<= 2;
-            facet_to_cell_0[i * 2] |= j;
+            // Combine cell-local facet and perm and place in lower 8 bits
+            // packed with 6 bits for perm, 2 for facet index
+            std::int32_t fnp0 = (fperm[c0 * 4 + j] << 2) | j;
+            facet_to_cell_0[i * 2] = (c0 << 8) | fnp0;
           }
           if (f1[j] == i)
           {
-            facet_to_cell_0[i * 2 + 1] <<= 2;
-            facet_to_cell_0[i * 2 + 1] |= j;
+            std::int32_t fnp1 = (fperm[c1 * 4 + j] << 2) | j;
+            facet_to_cell_0[i * 2 + 1] = (c1 << 8) | fnp1;
           }
         }
       }
@@ -130,8 +113,7 @@ int main(int argc, char* argv[])
                                                    facet_list_0.end());
     thrust::device_vector<std::int32_t> facet_to_cell(facet_to_cell_0.begin(),
                                                       facet_to_cell_0.end());
-    std::vector<std::int32_t> cell_list_0(
-        msh->topology()->index_map(msh->topology()->dim())->size_local());
+    std::vector<std::int32_t> cell_list_0(ncells);
     std::iota(cell_list_0.begin(), cell_list_0.end(), 0);
     thrust::device_vector<std::int32_t> cell_list(cell_list_0.begin(),
                                                   cell_list_0.end());
@@ -152,6 +134,61 @@ int main(int argc, char* argv[])
         basix::element::lagrange_variant::unset,
         basix::element::dpc_variant::unset,
         /* discontinuous = */ true);
+
+    // Get quadrature points on a reference triangle
+    auto [qpts, qwts] = basix::quadrature::make_quadrature<T>(
+        basix::quadrature::get_default_rule(basix::cell::type::triangle, 3),
+        basix::cell::type::triangle, basix::polyset::type::standard, 3);
+
+    std::vector<T> qpoints;
+    for (int j = 0; j < qpts.size() / 2; ++j)
+    {
+      qpoints.push_back(1 - qpts[j * 2] - qpts[j * 2 + 1]);
+      qpoints.push_back(qpts[j * 2]);
+      qpoints.push_back(qpts[j * 2 + 1]);
+    }
+    for (int i = 0; i < 3; ++i)
+    {
+      for (int j = 0; j < qpts.size() / 2; ++j)
+      {
+        if (i % 3 == 0)
+          qpoints.push_back(T(0));
+        qpoints.push_back(qpts[j * 2]);
+        if (i % 3 == 1)
+          qpoints.push_back(T(0));
+        qpoints.push_back(qpts[j * 2 + 1]);
+        if (i % 3 == 2)
+          qpoints.push_back(T(0));
+      }
+    }
+
+    std::size_t nq = qpoints.size() / 3;
+    std::cout << "nq = " << nq << "\n";
+
+    for (int i = 0; i < nq; ++i)
+    {
+      std::cout << i << ": ";
+      for (int j = 0; j < 3; ++j)
+        std::cout << qpoints[i * 3 + j] << ", ";
+      std::cout << "\n";
+    }
+
+    auto shape = elem_dg1.tabulate_shape(0, qpoints.size() / 3);
+    std::vector<T> table(
+        std::accumulate(shape.begin(), shape.end(), 1, std::multiplies<int>()));
+    elem_dg1.tabulate(0, qpoints, {nq, 3}, std::span(table));
+    // Suppress near-zeros
+    std::for_each(table.begin(), table.end(),
+                  [](T& q) { q = (std::abs(q) < 1e-15) ? 0.0 : q; });
+    thrust::device_vector<T> phi_device(table.begin(), table.end());
+
+    for (int i = 0; i < table.size() / 4; ++i)
+    {
+      std::cout << i << ": ";
+      for (int j = 0; j < 4; ++j)
+        std::cout << table[i * 4 + j] << ", ";
+      std::cout << "\n";
+    }
 
     auto V
         = std::make_shared<fem::FunctionSpace<U>>(fem::create_functionspace<U>(
