@@ -1,7 +1,8 @@
 
 // GPU kernels for explicit DG1 upwind convection on tetrahedral meshes.
 //
-//   dg1_convection   – accumulate upwind flux into b
+//   dg1_convection   – accumulate upwind flux into b using 6-point
+//                      Strang-Fix quadrature on each interior facet
 //
 
 #pragma once
@@ -15,25 +16,35 @@
 #include <hip/hip_runtime.h>
 #endif
 
-// Accumulate the upwind convective flux across each interior facet into b.
+// Accumulate the upwind convective flux across each interior facet into b
+// using 6-point Strang-Fix quadrature.
 //
 // For the two cells c0, c1 sharing a facet (c0 < c1, c0 owns the outward
-// normal), the upwind flux is:
-//   flux = max(w0.n, 0)*u_n[c0] + min(w1.n, 0)*u_n[c1]
-//   b[c0] -= flux;  b[c1] += flux;
-// where w0, w1 are the per-cell w values at the quadrature point on that
-// facet (from compute_w_at_qp), accessed via the combined cell+local-facet
-// index stored in facet_to_cell.
+// normal), the upwind flux at each quadrature point iq is:
+//   flux[iq] = max(w0.n, 0)*u_n[c0] + min(w1.n, 0)*u_n[c1]
+// and the contribution to each DoF i is integrated as:
+//   b[c0*ndof+i] -= sum_iq phi[...] * flux[iq]
+//   b[c1*ndof+i] += sum_iq phi[...] * flux[iq]
+// where w0, w1 and u_n[c0/c1] are evaluated from the DG1 basis functions at
+// each quadrature point.  Facet orientation is handled by permuting the
+// quadrature-point indices via the qperm table before indexing into phi.
 //
-// @param b             RHS accumulator, length num_cells. Zero before launch.
-// @param u_n           DG1 solution at the previous time step.
-// @param w             Velocity w as a DG1 function
-// @param phi           Basis function evaluated at quadrature points on facets
+// @param b             RHS accumulator, length num_cells*ndof. Zero before
+//                      launch.
+// @param u_n           DG1 solution coefficients at the previous time step,
+//                      layout [cell*ndof + dof].
+// @param w             DG1 velocity coefficients, layout
+//                      [(cell*ndof + dof)*3 + component].
+// @param phi           Basis function values at the 6 Strang-Fix quadrature
+//                      points on each local facet, layout
+//                      [local_facet * ndof * nq + qp * ndof + dof].
+//                      Size: 4 facets * 4 dofs * 6 points = 96 values.
 // @param normals       Scaled outward facet normals, layout [facet*3+d].
 //                      Magnitude encodes the facet area; points away from c0.
-// @param facet_to_cell Layout [facet*2]: packed {(c0<<2)|lf0, (c1<<2)|lf1},
-//                      c0 < c1. Cell index = value >> 2; local facet = value
-//                      & 3.
+// @param facet_to_cell Layout [facet*2]: packed {(c0<<8)|(perm0<<2)|lf0,
+//                      (c1<<8)|(perm1<<2)|lf1}, c0 < c1.
+//                      Cell index = value >> 8; permutation = (value>>2)&0x3F;
+//                      local facet = value & 0x03.
 // @param facets        Interior facet global indices to process.
 // @param n_facets      Length of facets.
 template <typename T>
@@ -137,11 +148,11 @@ __global__ void dg1_convection(T* b, const T* u_n, const T* w, const T* phi,
 }
 
 // Host wrapper: advance u_n by one explicit Euler convection step.
-// Launches compute_w_at_qp, dg0_convection, and dg0_mass in sequence,
-// with cudaDeviceSynchronize() between each launch.
+// Launches dg1_convection with cudaDeviceSynchronize() after the kernel.
 //
-// w_q is allocated internally as a temporary of size w.size() (one 3-vector
-// per cell per local facet). If w is time-independent this could be hoisted.
+// Uses 6-point Strang-Fix quadrature on each interior facet; phi must be
+// precomputed with the corresponding quadrature rule (layout described in
+// dg1_convection above).
 template <typename ContainerT, typename ContainerI>
 void run_dg1_convection(ContainerT& b, ContainerT& u_n, const ContainerT& w,
                         const ContainerT& phi, const ContainerT& normals,
