@@ -136,6 +136,49 @@ __global__ void dg1_convection(T* b, const T* u_n, const T* w, const T* phi,
   }
 }
 
+template <typename T>
+__global__ void dg1_uwgradv(T* b, const T* u_n, const T* w, const int* cells,
+                            int n_cells)
+{
+  // Load a set of facets
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx >= n_cells)
+    return;
+  int cglobal = cells[idx];
+
+  // Four point quadrature in cell (qwts=1/24)
+  constexpr nq = 4;
+  constexpr ndof = 4;
+  constexpr T phi[nq][ndof] = {{0.1381966011250091, 0.5854101966249688,
+                                0.1381966011250109, 0.1381966011250109},
+                               {0.1381966011250091, 0.138196601125011,
+                                0.585410196624969, 0.1381966011250109},
+                               {0.1381966011250091, 0.138196601125011,
+                                0.138196601125011, 0.585410196624969},
+                               {0.585410196624967, 0.1381966011250109,
+                                0.1381966011250109, 0.1381966011250109}};
+
+  for (int iq = 0; iq < nq; ++iq)
+  {
+    // u and w at quadrature points
+    T u0 = 0;
+    T w0[3] = {0};
+    for (int i = 0; i < ndof; ++i)
+    {
+      const T* wcell = w + (cglobal * ndof + i) * 3;
+      w0[0] += wcell[0] * phi[iq][i];
+      w0[1] += wcell[1] * phi[iq][i];
+      w0[2] += wcell[2] * phi[iq][i];
+      u0 += u_n[cglobal * ndof + i] * phi[iq][i];
+    }
+  }
+
+  // TODO: Geometric transform (need J, detJ etc.)
+
+  // TODO: Multiply by grad(v) - need grad(phi) etc.
+  // insert into b
+}
+
 // Host wrapper: advance u_n by one explicit Euler convection step.
 // Launches compute_w_at_qp, dg0_convection, and dg0_mass in sequence,
 // with cudaDeviceSynchronize() between each launch.
@@ -155,10 +198,17 @@ void run_dg1_convection(ContainerT& b, ContainerT& u_n, const ContainerT& w,
   dim3 block_size(512);
   dim3 grid_size(facets.size() / block_size.x + 1);
 
+  // upwind flux - inner(2 * avg(lmbda * w * u_n), jump(v, n)) * dS
   dg1_convection<T><<<grid_size, block_size>>>(
       b.data().get(), u_n.data().get(), w.data().get(), phi.data().get(),
       normals.data().get(), facet_to_cell.data().get(), facets.data().get(),
       facets.size());
 
   cudaDeviceSynchronize();
+
+  // inner(w*u, grad(v))*dx
+  dim3 grid_size(cells.size() / block_size.x + 1);
+  dg1_uwgradv<T><<<grid_size, block_size>>>(b.data().get(), u_n.data().get(),
+                                            w.data().get(), cells.data().get(),
+                                            cells.size());
 }
