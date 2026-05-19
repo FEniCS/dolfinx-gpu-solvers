@@ -1,13 +1,8 @@
 
-// GPU kernels for explicit DG0 upwind convection on tetrahedral meshes.
+// GPU kernels for explicit DG1 upwind convection on tetrahedral meshes.
 //
-// Pipeline (launch in order):
-//   1. compute_w_at_qp  – evaluate P1 velocity w at one quadrature point per
-//                         local facet, stored cell-by-cell
-//   2. dg0_convection   – accumulate upwind flux into b using those values
-//   3. dg0_mass         – apply the explicit Euler update to u_n in-place
+//   dg1_convection   – accumulate upwind flux into b
 //
-// run_dg0_convection is the host wrapper that sequences all three.
 
 #pragma once
 #include <cstdint>
@@ -159,8 +154,6 @@ void run_dg1_convection(ContainerT& b, ContainerT& u_n, const ContainerT& w,
   // Choose a good block size
   dim3 block_size(512);
   dim3 grid_size(facets.size() / block_size.x + 1);
-
-  std::cout << "call dg1_convection:" << facets.size() << "\n";
 
   dg1_convection<T><<<grid_size, block_size>>>(
       b.data().get(), u_n.data().get(), w.data().get(), phi.data().get(),
