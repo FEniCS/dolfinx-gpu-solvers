@@ -69,7 +69,7 @@ int main(int argc, char* argv[])
     msh->topology_mutable()->create_connectivity(tdim - 1, tdim);
     msh->topology_mutable()->create_connectivity(tdim, tdim - 1);
     msh->topology_mutable()->create_entity_permutations();
-    auto [normals, detJ] = compute_facet_normals(*msh);
+    auto [normals, detJ, G] = compute_facet_normals(*msh);
 
     int nfacets = msh->topology()->index_map(tdim - 1)->size_local();
     int ncells = msh->topology()->index_map(tdim)->size_local();
@@ -139,6 +139,11 @@ int main(int argc, char* argv[])
     auto [qpts, qwts] = basix::quadrature::make_quadrature<T>(
         basix::quadrature::get_default_rule(basix::cell::type::triangle, 3),
         basix::cell::type::triangle, basix::polyset::type::standard, 3);
+
+    std::cout << "qwts=";
+    for (auto w : qwts)
+      std::cout << w << " ";
+    std::cout << std::endl;
 
     std::vector<T> qpoints;
     for (int j = 0; j < qpts.size() / 2; ++j)
@@ -307,7 +312,7 @@ int main(int argc, char* argv[])
         thrust::device_vector<T> k(un_device.array().size());
         thrust::fill(b_device.array().begin(), b_device.array().end(), T(0));
         run_dg1_convection(b_device.array(), un_device.array(),
-                           w_device.array(), phi_device, normals, detJ,
+                           w_device.array(), phi_device, normals, detJ, G,
                            facet_to_cell, facet_list, cell_list, dt);
         solve_block_diag_system(block_mass, b_device.array(), k);
 
@@ -320,8 +325,8 @@ int main(int argc, char* argv[])
         // k = M⁻¹R(u1)
         thrust::fill(b_device.array().begin(), b_device.array().end(), T(0));
         run_dg1_convection(b_device.array(), u1, w_device.array(), phi_device,
-                           normals, detJ, facet_to_cell, facet_list, cell_list,
-                           dt);
+                           normals, detJ, G, facet_to_cell, facet_list,
+                           cell_list, dt);
         solve_block_diag_system(block_mass, b_device.array(), k);
 
         // u1 = 0.75 * un + 0.25 * (u1 + k * dt)
@@ -334,8 +339,8 @@ int main(int argc, char* argv[])
         // k = M⁻¹R(u1)
         thrust::fill(b_device.array().begin(), b_device.array().end(), T(0));
         run_dg1_convection(b_device.array(), u1, w_device.array(), phi_device,
-                           normals, detJ, facet_to_cell, facet_list, cell_list,
-                           dt);
+                           normals, detJ, G, facet_to_cell, facet_list,
+                           cell_list, dt);
         solve_block_diag_system(block_mass, b_device.array(), k);
 
         // un = (1.0/3.0) * un + (2.0/3.0) * (u1 + k * dt)

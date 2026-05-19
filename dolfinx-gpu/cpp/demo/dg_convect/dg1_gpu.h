@@ -148,8 +148,8 @@ __global__ void dg1_convection(T* b, const T* u_n, const T* w, const T* phi,
 }
 
 template <typename T>
-__global__ void dg1_uwgradv(T* b, const T* u_n, const T* w, const int* cells,
-                            int n_cells)
+__global__ void dg1_uwgradv(T* b, const T* u_n, const T* w, const T* detJ,
+                            const T* G, const int* cells, int n_cells)
 {
   // Load a set of facets
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -158,8 +158,8 @@ __global__ void dg1_uwgradv(T* b, const T* u_n, const T* w, const int* cells,
   int cglobal = cells[idx];
 
   // Four point quadrature in cell (qwts=1/24)
-  constexpr nq = 4;
-  constexpr ndof = 4;
+  constexpr int nq = 4;
+  constexpr int ndof = 4;
   constexpr T phi[nq][ndof] = {{0.1381966011250091, 0.5854101966249688,
                                 0.1381966011250109, 0.1381966011250109},
                                {0.1381966011250091, 0.138196601125011,
@@ -168,6 +168,7 @@ __global__ void dg1_uwgradv(T* b, const T* u_n, const T* w, const int* cells,
                                 0.138196601125011, 0.585410196624969},
                                {0.585410196624967, 0.1381966011250109,
                                 0.1381966011250109, 0.1381966011250109}};
+  constexpr T dphi[3][nq][ndof] = {};
 
   for (int iq = 0; iq < nq; ++iq)
   {
@@ -182,15 +183,19 @@ __global__ void dg1_uwgradv(T* b, const T* u_n, const T* w, const int* cells,
       w0[2] += wcell[2] * phi[iq][i];
       u0 += u_n[cglobal * ndof + i] * phi[iq][i];
     }
-  }
 
-  // TODO: Geometric transform (need J, detJ etc.)
+    // Geometric transform with J^-T (assumed cellwise constant)
+    const T* Gc = G + cglobal * 6;
+    T wr[3];
+    wr[0] = u0 * (Gc[0] * w0[0] + Gc[1] * w0[1] + Gc[2] * w0[2]);
+    wr[1] = u0 * (Gc[1] * w0[0] + Gc[3] * w0[1] + Gc[4] * w0[2]);
+    wr[2] = u0 * (Gc[2] * w0[0] + Gc[4] * w0[1] + Gc[5] * w0[2]);
+  }
 
   // TODO: Multiply by grad(v) - need grad(phi) etc.
   // insert into b
 }
 
-// Host wrapper: advance u_n by one explicit Euler convection step.
 // Launches dg1_convection with cudaDeviceSynchronize() after the kernel.
 //
 // Uses 6-point Strang-Fix quadrature on each interior facet; phi must be
@@ -199,7 +204,8 @@ __global__ void dg1_uwgradv(T* b, const T* u_n, const T* w, const int* cells,
 template <typename ContainerT, typename ContainerI>
 void run_dg1_convection(ContainerT& b, ContainerT& u_n, const ContainerT& w,
                         const ContainerT& phi, const ContainerT& normals,
-                        const ContainerT& detJ, const ContainerI& facet_to_cell,
+                        const ContainerT& detJ, const ContainerT& G,
+                        const ContainerI& facet_to_cell,
                         const ContainerI& facets, const ContainerI& cells,
                         double dt)
 {
@@ -218,8 +224,8 @@ void run_dg1_convection(ContainerT& b, ContainerT& u_n, const ContainerT& w,
   cudaDeviceSynchronize();
 
   // inner(w*u, grad(v))*dx
-  dim3 grid_size(cells.size() / block_size.x + 1);
-  dg1_uwgradv<T><<<grid_size, block_size>>>(b.data().get(), u_n.data().get(),
-                                            w.data().get(), cells.data().get(),
-                                            cells.size());
+  grid_size.x = (cells.size() / block_size.x + 1);
+  dg1_uwgradv<T><<<grid_size, block_size>>>(
+      b.data().get(), u_n.data().get(), w.data().get(), detJ.data().get(),
+      G.data().get(), cells.data().get(), cells.size());
 }
