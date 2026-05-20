@@ -62,6 +62,144 @@ using gpublasStatus_t = cublasStatus_t;
 // ── assemble_dg
 // ───────────────────────────────────────────────────────────────
 
+template <dolfinx::scalar T>
+class BlockDiagonalSolver
+{
+  using U = dolfinx::scalar_value_t<T>;
+
+public:
+  BlockDiagonalSolver(
+      const dolfinx::fem::Form<T, U>& a,
+      const std::vector<
+          std::reference_wrapper<const dolfinx::fem::DirichletBC<T, U>>>& bcs)
+  {
+    // Assemble a in DG style
+    // Vector to assemble into
+    std::vector<T> A_cpu;
+
+    auto mat_add = [&A_cpu](std::span<const std::int32_t> rows,
+                            std::span<const std::int32_t> cols,
+                            std::span<const T> data) -> int
+    {
+      A_cpu.insert(A_cpu.end(), data.begin(), data.end());
+      return 0;
+    };
+
+    assemble_matrix(mat_add, a, bcs);
+
+    // Create a GPU BLAS context
+    BLAS_CHECK(gpublasCreate(&_handle));
+
+    ndofs = a.function_spaces()[0]->dofmap()->element_dof_layout()->num_dofs();
+    int ncells = static_cast<int>(A_cpu.size()) / (ndofs * ndofs);
+
+    // Allocate memory for A, A^-1
+    thrust::device_vector<T> A(A_cpu.begin(), A_cpu.end());
+    _Ainv.resize(A.size());
+
+    std::vector<const T*> ptrA(ncells);
+    std::vector<T*> ptrAinv(ncells);
+    for (int i = 0; i < ncells; ++i)
+    {
+      ptrA[i] = A.data().get() + ndofs * ndofs * i;
+      ptrAinv[i] = _Ainv.data().get() + ndofs * ndofs * i;
+    }
+    thrust::device_vector<const T*> ptrA_device(ptrA.begin(), ptrA.end());
+    // Use a non-const pointer array here: matinvBatched writes T* output, not
+    // const T*.  The member ptrAinv_device (also T*) is assigned after
+    // inversion so that solve() can pass it directly to gemvBatched.
+    ptrAinv_device
+        = thrust::device_vector<T*>(ptrAinv.begin(), ptrAinv.end());
+    thrust::device_vector<int> info(ncells, 0);
+
+    // Invert A blockwise
+    if constexpr (std::is_same_v<double, T>)
+    {
+      BLAS_CHECK(gpublasDmatinvBatched(_handle, ndofs, ptrA_device.data().get(),
+                                       ndofs, ptrAinv_device.data().get(),
+                                       ndofs, info.data().get(), ncells));
+    }
+    else if constexpr (std::is_same_v<float, T>)
+    {
+      BLAS_CHECK(gpublasSmatinvBatched(_handle, ndofs, ptrA_device.data().get(),
+                                       ndofs, ptrAinv_device.data().get(),
+                                       ndofs, info.data().get(), ncells));
+    }
+    else
+      throw std::runtime_error("Unsupported scalar type");
+
+    // Check that every block was non-singular (info[i] == 0 means success).
+    // Copy to host first; the device vector is not directly iterable on CPU.
+    std::vector<int> h_info(ncells);
+    thrust::copy(info.begin(), info.end(), h_info.begin());
+    if (auto it
+        = std::ranges::find_if_not(h_info, [](int v) { return v == 0; });
+        it != h_info.end())
+    {
+      throw std::runtime_error(
+          "matinvBatched: singular matrix at block "
+          + std::to_string(std::distance(h_info.begin(), it)));
+    }
+  }
+
+  ~BlockDiagonalSolver() { gpublasDestroy(_handle); }
+
+  /// Solve A.u = b for a block diagonal system
+  /// Assumes DG style matrix laid out in cell order in A
+  /// and that dofs of b and u follow the same layout
+  /// @param b RHS input vector
+  /// @param u Solution vector
+  void solve(const thrust::device_vector<T>& b, thrust::device_vector<T>& u)
+  {
+    if (b.size() * ndofs != _Ainv.size() or b.size() != u.size())
+      throw std::runtime_error("Size mismatch in BlockDiagonalSolver");
+
+    int ncells = static_cast<int>(b.size()) / ndofs;
+    std::vector<const T*> ptrb(ncells);
+    std::vector<T*> ptru(ncells);
+    for (int i = 0; i < ncells; ++i)
+    {
+      ptrb[i] = b.data().get() + ndofs * i;
+      ptru[i] = u.data().get() + ndofs * i;
+    }
+    thrust::device_vector<const T*> ptrb_device(ptrb.begin(), ptrb.end());
+    thrust::device_vector<T*> ptru_device(ptru.begin(), ptru.end());
+
+    // NB use transpose operator, since original A was Row Major.
+    // alpha and beta must match the scalar type T.
+    const T alpha = T{1};
+    const T beta = T{0};
+
+    if constexpr (std::is_same_v<double, T>)
+    {
+      BLAS_CHECK(gpublasDgemvBatched(_handle, GPUBLAS_OP_T, ndofs, ndofs, &alpha,
+                                     ptrAinv_device.data().get(), ndofs,
+                                     ptrb_device.data().get(), 1, &beta,
+                                     ptru_device.data().get(), 1, ncells));
+    }
+    else if constexpr (std::is_same_v<float, T>)
+    {
+      BLAS_CHECK(gpublasSgemvBatched(_handle, GPUBLAS_OP_T, ndofs, ndofs, &alpha,
+                                     ptrAinv_device.data().get(), ndofs,
+                                     ptrb_device.data().get(), 1, &beta,
+                                     ptru_device.data().get(), 1, ncells));
+    }
+    else
+      throw std::runtime_error("Unsupported scalar type");
+  }
+
+private:
+  // GPU blas handle
+  gpublasHandle_t _handle;
+
+  // Number of dofs per cell
+  int ndofs;
+
+  // Inverse of A, stored blockwise
+  thrust::device_vector<T> _Ainv;
+  thrust::device_vector<T*> ptrAinv_device;
+};
+
 /// Assemble a form in DG style, simply appending each dense local element
 /// matrix to an array, inverting blocks after assembly
 /// @param a Form
