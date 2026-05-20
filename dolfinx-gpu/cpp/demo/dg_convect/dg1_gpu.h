@@ -230,9 +230,16 @@ void run_dg1_convection(ContainerT& b, ContainerT& u_n, const ContainerT& w,
 
   cudaDeviceSynchronize();
 
-  // inner(w*u, grad(v))*dx
-  grid_size.x = (cells.size() / block_size.x + 1);
-  dg1_uwgradv<T><<<grid_size, block_size>>>(b.data().get(), u_n.data().get(),
-                                            w.data().get(), Kadj.data().get(),
-                                            cells.data().get(), cells.size());
+  std::vector<T> bcpu(b.size());
+  thrust::copy(b.begin(), b.end(), bcpu.begin());
+  T bnorm = std::inner_product(bcpu.begin(), bcpu.end(), bcpu.begin(), T(0));
+  std::cout << "bnorm = " << std::sqrt(bnorm) << "\n";
+
+  // // inner(w*u, grad(v))*dx
+  // grid_size.x = (cells.size() / block_size.x + 1);
+  // dg1_uwgradv<T><<<grid_size, block_size>>>(b.data().get(), u_n.data().get(),
+  //                                           w.data().get(),
+  //                                           Kadj.data().get(),
+  //                                           cells.data().get(),
+  //                                           cells.size());
 }
