@@ -4,17 +4,19 @@
 //
 // SPDX-License-Identifier: MIT
 //
-// C++ implementation of an explicit DG0 upwind advection scheme on the unit
-// square.  The variational forms are generated from dg_convect.py via ffcx.
+// C++ implementation of an explicit DG1 upwind advection scheme on a
+// tetrahedral mesh.  The variational forms are generated from dg_convect.py
+// via ffcx.
 //
-// Time integration: forward Euler
-//   M u^{n+1} = b(u^n)
-// where M is the diagonal DG0 mass matrix (scaled by 1/dt) and b is the
-// explicit RHS assembled from form L.  Because M is strictly diagonal for
-// DG0 the solve reduces to element-wise division.
+// Time integration: SSP-RK3 (Shu–Osher three-stage scheme)
+//   Stage 1:  u1       = u^n + dt * M^{-1} R(u^n)
+//   Stage 2:  u1       = 0.75*u^n + 0.25*(u1 + dt * M^{-1} R(u1))
+//   Stage 3:  u^{n+1}  = (u^n + 2*(u1 + dt * M^{-1} R(u1))) / 3
+// where M is the block-diagonal DG1 mass matrix (4×4 blocks) and R is the
+// explicit upwind convection residual assembled on interior facets.
 //
-// Space: DG0 (piecewise-constant) for the scalar solution u
-//        DG0 vector (2 components) for the advecting velocity w
+// Space: DG1 (piecewise-linear) for the scalar solution u
+//        DG1 vector (3 components) for the advecting velocity w
 
 #include "block_diag.h"
 #include "dg1_gpu.h"
@@ -120,8 +122,8 @@ int main(int argc, char* argv[])
 
     // -----------------------------------------------------------------------
     // Finite element spaces
-    //   V : DG0 scalar  (piecewise-constant solution)
-    //   W : DG1 vector  (advecting velocity, 2 components)
+    //   V : DG1 scalar  (piecewise-linear solution)
+    //   W : DG1 vector  (advecting velocity, 3 components)
     // -----------------------------------------------------------------------
     auto elem_dg0 = basix::create_element<U>(
         basix::element::family::P, basix::cell::type::tetrahedron, 0,
@@ -199,7 +201,7 @@ int main(int argc, char* argv[])
         = std::make_shared<fem::FunctionSpace<U>>(fem::create_functionspace<U>(
             msh, std::make_shared<fem::FiniteElement<U>>(elem_dg1)));
 
-    // Vector DG0: same scalar element, value_shape = {2}
+    // Vector DG1: same scalar element, value_shape = {3} (3 spatial components)
     auto W
         = std::make_shared<fem::FunctionSpace<U>>(fem::create_functionspace<U>(
             msh, std::make_shared<fem::FiniteElement<U>>(
@@ -268,8 +270,9 @@ int main(int argc, char* argv[])
                                               {{"delta_t", dt_const}}, {}, {});
 
     // -----------------------------------------------------------------------
-    // Assemble mass-matrix diagonal  M[i] = |T_i| / dt
-    // (done once; M is time-independent)
+    // Assemble block mass matrix M (4×4 blocks, one per cell)
+    // and immediately invert each block: returns M^{-1} in DG layout.
+    // Done once; M is time-independent.
     // -----------------------------------------------------------------------
     auto map = V->dofmap()->index_map;
     const int bs = V->dofmap()->index_map_bs();

@@ -159,7 +159,8 @@ void solve_block_diag_system(const thrust::device_vector<T>& Ainv,
   gpublasHandle_t handle;
   BLAS_CHECK(gpublasCreate(&handle));
 
-  int n = 4;
+  // FIXME: get from element/dofmap
+  int n = 4; // 4 dofs per cell (DG1 on tetrahedra)
   int ncells = static_cast<int>(b.size()) / n;
 
   std::vector<const T*> ptrAinv(ncells);

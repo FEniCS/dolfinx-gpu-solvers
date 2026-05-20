@@ -153,11 +153,31 @@ __global__ void dg1_convection(T* b, const T* u_n, const T* w, const T* phi,
   }
 }
 
+// Accumulate the cell-volume term  inner(u*w, grad(v)) * dx  into b.
+//
+// This is the integration-by-parts counterpart of the facet flux in
+// dg1_convection.  Together they discretise the advection operator
+//   -inner(u*w, grad(v))*dx + upwind_flux(u, v)*dS
+// in the DG1 strong form.
+//
+// Uses a 4-point symmetric quadrature rule (weight = 1/24 each) exact
+// for polynomials of degree ≤ 2 on a tetrahedron.
+//
+// @param b      RHS accumulator, length num_cells*ndof.
+// @param u_n    DG1 solution coefficients, layout [cell*ndof + dof].
+// @param w      DG1 velocity coefficients, layout [(cell*ndof + dof)*3 + d].
+// @param Kadj   Adjugate Jacobian adj(J) per cell, layout [cell*9 + row*3+col]
+//               (row-major 3×3).  Used to map reference gradients to physical
+//               space: grad_x phi_i = Kadj * grad_xi phi_i / det(J), but since
+//               the 1/det(J) cancels with the physical volume element the
+//               adjugate is used directly.
+// @param cells  Cell indices to process.
+// @param n_cells Length of cells.
 template <typename T>
 __global__ void dg1_uwgradv(T* b, const T* u_n, const T* w, const T* Kadj,
                             const int* cells, int n_cells)
 {
-  // Load a set of facets
+  // Load a set of cells
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx >= n_cells)
     return;
@@ -239,7 +259,7 @@ void run_dg1_convection(ContainerT& b, ContainerT& u_n, const ContainerT& w,
     printf("kernel launch failed with error \"%s\".\n",
            cudaGetErrorString(cudaerr));
 
-  // // inner(w*u, grad(v))*dx
+  // inner(w*u, grad(v))*dx  (volume term, balances the facet flux above)
   grid_size.x = (cells.size() / block_size.x + 1);
   dg1_uwgradv<T><<<grid_size, block_size>>>(b.data().get(), u_n.data().get(),
                                             w.data().get(), Kadj.data().get(),

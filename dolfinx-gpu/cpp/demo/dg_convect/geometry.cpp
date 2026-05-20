@@ -93,7 +93,7 @@ compute_facet_normals(dolfinx::mesh::Mesh<T>& mesh)
           J[i][j] += coord_dofs[k][i] * dphi[j * 4 + k];
       }
 
-    // Components of K = J^-1 (detJ)
+    // Adjugate of J: K = adj(J) = det(J) * J^{-1} (cofactor matrix of J)
     T K[3][3] = {{J[1][1] * J[2][2] - J[1][2] * J[2][1],
                   -J[0][1] * J[2][2] + J[0][2] * J[2][1],
                   J[0][1] * J[1][2] - J[0][2] * J[1][1]},
