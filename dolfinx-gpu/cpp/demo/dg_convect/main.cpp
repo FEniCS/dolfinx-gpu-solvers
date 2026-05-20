@@ -309,12 +309,39 @@ int main(int argc, char* argv[])
       {
         // Run kernel on GPU
         // k = M⁻¹R(un)
+
+        std::vector<T> uncpu(un_device.array().size());
+        thrust::copy(un_device.array().begin(), un_device.array().end(),
+                     uncpu.begin());
+        T unnorm = std::inner_product(uncpu.begin(), uncpu.end(), uncpu.begin(),
+                                      T(0));
+        std::cout << "u_n norm = " << std::sqrt(unnorm) << "\n";
+
+        std::vector<T> wcpu(w_device.array().size());
+        thrust::copy(w_device.array().begin(), w_device.array().end(),
+                     wcpu.begin());
+        T wnorm
+            = std::inner_product(wcpu.begin(), wcpu.end(), wcpu.begin(), T(0));
+        std::cout << "w norm = " << std::sqrt(wnorm) << "\n";
+
         thrust::device_vector<T> k(un_device.array().size());
         thrust::fill(b_device.array().begin(), b_device.array().end(), T(0));
         run_dg1_convection(b_device.array(), un_device.array(),
                            w_device.array(), phi_device, normals, Kadj,
                            facet_to_cell, facet_list, cell_list);
+        std::vector<T> bcpu(b_device.array().size());
+        thrust::copy(b_device.array().begin(), b_device.array().end(),
+                     bcpu.begin());
+        T bnorm
+            = std::inner_product(bcpu.begin(), bcpu.end(), bcpu.begin(), T(0));
+        std::cout << "bnorm = " << std::sqrt(bnorm) << "\n";
+
         solve_block_diag_system(block_mass, b_device.array(), k);
+        std::vector<T> kcpu(k.size());
+        thrust::copy(k.begin(), k.end(), kcpu.begin());
+        T knorm
+            = std::inner_product(kcpu.begin(), kcpu.end(), kcpu.begin(), T(0));
+        std::cout << "knorm = " << std::sqrt(knorm) << "\n";
 
         // u1 = un + k * dt
         thrust::device_vector<T> u1(un_device.array().size());
