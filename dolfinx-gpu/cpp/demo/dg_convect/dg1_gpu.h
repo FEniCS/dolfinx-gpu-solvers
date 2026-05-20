@@ -149,7 +149,7 @@ __global__ void dg1_convection(T* b, const T* u_n, const T* w, const T* phi,
 
 template <typename T>
 __global__ void dg1_uwgradv(T* b, const T* u_n, const T* w, const T* detJ,
-                            const T* G, const int* cells, int n_cells)
+                            const T* Kadj, const int* cells, int n_cells)
 {
   // Load a set of facets
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -185,11 +185,11 @@ __global__ void dg1_uwgradv(T* b, const T* u_n, const T* w, const T* detJ,
     }
 
     // Geometric transform with J^-T (assumed cellwise constant)
-    const T* Gc = G + cglobal * 6;
+    const T* K = Kadj + cglobal * 9;
     T wr[3];
-    wr[0] = u0 * (Gc[0] * w0[0] + Gc[1] * w0[1] + Gc[2] * w0[2]);
-    wr[1] = u0 * (Gc[1] * w0[0] + Gc[3] * w0[1] + Gc[4] * w0[2]);
-    wr[2] = u0 * (Gc[2] * w0[0] + Gc[4] * w0[1] + Gc[5] * w0[2]);
+    wr[0] = u0 * (K[0] * w0[0] + K[1] * w0[1] + K[2] * w0[2]);
+    wr[1] = u0 * (K[3] * w0[0] + K[4] * w0[1] + K[5] * w0[2]);
+    wr[2] = u0 * (K[6] * w0[0] + K[7] * w0[1] + K[8] * w0[2]);
   }
 
   // TODO: Multiply by grad(v) - need grad(phi) etc.

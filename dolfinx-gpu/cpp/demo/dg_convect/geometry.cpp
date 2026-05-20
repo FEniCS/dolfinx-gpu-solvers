@@ -62,7 +62,7 @@ compute_facet_normals(dolfinx::mesh::Mesh<T>& mesh)
   // Compute facet Jacobians/normals
   std::vector<T> facet_jacobians(num_facets * 3, 0.0);
   std::vector<T> detJ(num_cells);
-  std::vector<T> G(num_cells * 6);
+  std::vector<T> Kadj(num_cells * 9);
   auto xgeom = mesh.geometry().x();
   auto dofmap = mesh.geometry().dofmap();
 
@@ -107,18 +107,16 @@ compute_facet_normals(dolfinx::mesh::Mesh<T>& mesh)
     detJ[c]
         = std::abs(J[0][0] * K[0][0] + J[0][1] * K[1][0] + J[0][2] * K[2][0]);
 
-    G[c * 6]
-        = (K[0][0] * K[0][0] + K[0][1] * K[0][1] + K[0][2] * K[0][2]) / detJ[c];
-    G[c * 6 + 1]
-        = (K[1][0] * K[0][0] + K[1][1] * K[0][1] + K[1][2] * K[0][2]) / detJ[c];
-    G[c * 6 + 2]
-        = (K[2][0] * K[0][0] + K[2][1] * K[0][1] + K[2][2] * K[0][2]) / detJ[c];
-    G[c * 6 + 3]
-        = (K[1][0] * K[1][0] + K[1][1] * K[1][1] + K[1][2] * K[1][2]) / detJ[c];
-    G[c * 6 + 4]
-        = (K[2][0] * K[1][0] + K[2][1] * K[1][1] + K[2][2] * K[1][2]) / detJ[c];
-    G[c * 6 + 5]
-        = (K[2][0] * K[2][0] + K[2][1] * K[2][1] + K[2][2] * K[2][2]) / detJ[c];
+    // Store K
+    Kadj[c * 9] = K[0][0];
+    Kadj[c * 9 + 1] = K[0][1];
+    Kadj[c * 9 + 2] = K[0][2];
+    Kadj[c * 9 + 3] = K[1][0];
+    Kadj[c * 9 + 4] = K[1][1];
+    Kadj[c * 9 + 5] = K[1][2];
+    Kadj[c * 9 + 6] = K[2][0];
+    Kadj[c * 9 + 7] = K[2][1];
+    Kadj[c * 9 + 8] = K[2][2];
 
     // Columns of J: images of the reference basis vectors xi_0, xi_1, xi_2.
     // For a P1 tet these are the edge vectors g1=v1-v0, g2=v2-v0, g3=v3-v0.
@@ -151,7 +149,7 @@ compute_facet_normals(dolfinx::mesh::Mesh<T>& mesh)
   return {
       thrust::device_vector<T>(facet_jacobians.begin(), facet_jacobians.end()),
       thrust::device_vector<T>(detJ.begin(), detJ.end()),
-      thrust::device_vector<T>(G.begin(), G.end())};
+      thrust::device_vector<T>(Kadj.begin(), Kadj.end())};
 }
 
 template std::tuple<thrust::device_vector<double>,

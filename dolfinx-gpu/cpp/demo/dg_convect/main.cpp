@@ -69,7 +69,7 @@ int main(int argc, char* argv[])
     msh->topology_mutable()->create_connectivity(tdim - 1, tdim);
     msh->topology_mutable()->create_connectivity(tdim, tdim - 1);
     msh->topology_mutable()->create_entity_permutations();
-    auto [normals, detJ, G] = compute_facet_normals(*msh);
+    auto [normals, detJ, Kadj] = compute_facet_normals(*msh);
 
     int nfacets = msh->topology()->index_map(tdim - 1)->size_local();
     int ncells = msh->topology()->index_map(tdim)->size_local();
@@ -312,7 +312,7 @@ int main(int argc, char* argv[])
         thrust::device_vector<T> k(un_device.array().size());
         thrust::fill(b_device.array().begin(), b_device.array().end(), T(0));
         run_dg1_convection(b_device.array(), un_device.array(),
-                           w_device.array(), phi_device, normals, detJ, G,
+                           w_device.array(), phi_device, normals, detJ, Kadj,
                            facet_to_cell, facet_list, cell_list, dt);
         solve_block_diag_system(block_mass, b_device.array(), k);
 
@@ -325,7 +325,7 @@ int main(int argc, char* argv[])
         // k = M⁻¹R(u1)
         thrust::fill(b_device.array().begin(), b_device.array().end(), T(0));
         run_dg1_convection(b_device.array(), u1, w_device.array(), phi_device,
-                           normals, detJ, G, facet_to_cell, facet_list,
+                           normals, detJ, Kadj, facet_to_cell, facet_list,
                            cell_list, dt);
         solve_block_diag_system(block_mass, b_device.array(), k);
 
@@ -339,7 +339,7 @@ int main(int argc, char* argv[])
         // k = M⁻¹R(u1)
         thrust::fill(b_device.array().begin(), b_device.array().end(), T(0));
         run_dg1_convection(b_device.array(), u1, w_device.array(), phi_device,
-                           normals, detJ, G, facet_to_cell, facet_list,
+                           normals, detJ, Kadj, facet_to_cell, facet_list,
                            cell_list, dt);
         solve_block_diag_system(block_mass, b_device.array(), k);
 
