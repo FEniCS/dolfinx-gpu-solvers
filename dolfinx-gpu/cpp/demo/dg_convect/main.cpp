@@ -278,7 +278,7 @@ int main(int argc, char* argv[])
     const int bs = V->dofmap()->index_map_bs();
     const std::size_t nlocal = map->size_local();
 
-    thrust::device_vector<T> block_mass = assemble_dg(a_form, {});
+    BlockDiagonalSolver block_mass(a_form, {});
 
     // -----------------------------------------------------------------------
     // RHS vector (re-assembled every step)
@@ -318,7 +318,7 @@ int main(int argc, char* argv[])
         run_dg1_convection(b_device.array(), un_device.array(),
                            w_device.array(), phi_device, normals, Kadj,
                            facet_to_cell, facet_list, cell_list);
-        solve_block_diag_system(block_mass, b_device.array(), k);
+        block_mass.solve(b_device.array(), k);
 
         cudaDeviceSynchronize();
 
@@ -332,7 +332,7 @@ int main(int argc, char* argv[])
         thrust::fill(b_device.array().begin(), b_device.array().end(), T(0));
         run_dg1_convection(b_device.array(), u1, w_device.array(), phi_device,
                            normals, Kadj, facet_to_cell, facet_list, cell_list);
-        solve_block_diag_system(block_mass, b_device.array(), k);
+        block_mass.solve(b_device.array(), k);
 
         cudaDeviceSynchronize();
 
@@ -347,7 +347,7 @@ int main(int argc, char* argv[])
         thrust::fill(b_device.array().begin(), b_device.array().end(), T(0));
         run_dg1_convection(b_device.array(), u1, w_device.array(), phi_device,
                            normals, Kadj, facet_to_cell, facet_list, cell_list);
-        solve_block_diag_system(block_mass, b_device.array(), k);
+        block_mass.solve(b_device.array(), k);
 
         cudaDeviceSynchronize();
 
