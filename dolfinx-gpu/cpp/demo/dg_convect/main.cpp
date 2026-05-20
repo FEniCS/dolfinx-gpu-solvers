@@ -313,7 +313,7 @@ int main(int argc, char* argv[])
         thrust::fill(b_device.array().begin(), b_device.array().end(), T(0));
         run_dg1_convection(b_device.array(), un_device.array(),
                            w_device.array(), phi_device, normals, detJ, Kadj,
-                           facet_to_cell, facet_list, cell_list, dt);
+                           facet_to_cell, facet_list, cell_list);
         solve_block_diag_system(block_mass, b_device.array(), k);
 
         // u1 = un + k * dt
@@ -326,7 +326,7 @@ int main(int argc, char* argv[])
         thrust::fill(b_device.array().begin(), b_device.array().end(), T(0));
         run_dg1_convection(b_device.array(), u1, w_device.array(), phi_device,
                            normals, detJ, Kadj, facet_to_cell, facet_list,
-                           cell_list, dt);
+                           cell_list);
         solve_block_diag_system(block_mass, b_device.array(), k);
 
         // u1 = 0.75 * un + 0.25 * (u1 + k * dt)
@@ -340,7 +340,7 @@ int main(int argc, char* argv[])
         thrust::fill(b_device.array().begin(), b_device.array().end(), T(0));
         run_dg1_convection(b_device.array(), u1, w_device.array(), phi_device,
                            normals, detJ, Kadj, facet_to_cell, facet_list,
-                           cell_list, dt);
+                           cell_list);
         solve_block_diag_system(block_mass, b_device.array(), k);
 
         // un = (1.0/3.0) * un + (2.0/3.0) * (u1 + k * dt)

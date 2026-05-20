@@ -187,7 +187,6 @@ __global__ void dg1_uwgradv(T* b, const T* u_n, const T* w, const T* detJ,
 
     // Geometric transform with K=adj(J) (assumed cellwise constant)
     const T* K = Kadj + cglobal * 9;
-    T wr[3];
     wr[iq * 3] = u0 * (K[0] * w0[0] + K[1] * w0[1] + K[2] * w0[2]);
     wr[iq * 3 + 1] = u0 * (K[3] * w0[0] + K[4] * w0[1] + K[5] * w0[2]);
     wr[iq * 3 + 2] = u0 * (K[6] * w0[0] + K[7] * w0[1] + K[8] * w0[2]);
@@ -215,8 +214,7 @@ void run_dg1_convection(ContainerT& b, ContainerT& u_n, const ContainerT& w,
                         const ContainerT& phi, const ContainerT& normals,
                         const ContainerT& detJ, const ContainerT& Kadj,
                         const ContainerI& facet_to_cell,
-                        const ContainerI& facets, const ContainerI& cells,
-                        double dt)
+                        const ContainerI& facets, const ContainerI& cells)
 {
   using T = typename ContainerT::value_type;
 
