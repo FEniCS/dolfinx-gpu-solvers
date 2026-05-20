@@ -60,7 +60,7 @@ int main(int argc, char* argv[])
     // -----------------------------------------------------------------------
     auto part = mesh::create_cell_partitioner(mesh::GhostMode::shared_facet);
     auto msh = std::make_shared<mesh::Mesh<U>>(mesh::create_box<U>(
-        MPI_COMM_WORLD, {{{0.0, 0.0, 0.0}, {1.0, 1.0, 0.1}}}, {n, n, n / 10},
+        MPI_COMM_WORLD, {{{0.0, 0.0, 0.0}, {1.0, 1.0, 0.1}}}, {n, n, 5},
         mesh::CellType::tetrahedron, part));
 
     // Ensure facet entities and facet↔cell connectivity exist

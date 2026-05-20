@@ -1,6 +1,6 @@
 from dolfinx import mesh, fem, io
 import ufl
-from ufl import inner, dx, grad, dot, dS, jump, avg
+from ufl import inner, dx, grad, dot, jump, avg
 from mpi4py import MPI
 from petsc4py import PETSc
 import numpy as np
@@ -26,13 +26,14 @@ def marker_inflow(x):
 # Simulation parameters
 k = 1           # DG1 — requires SSP-RK for stability
 t_end = 2.0
-num_time_steps = 400   # CFL is tighter for DG1; increase if blow-up
+num_time_steps = 1000
 
-xdmf = io.XDMFFile(MPI.COMM_WORLD, "circle.xdmf", "r")
-msh = xdmf.read_mesh()
+# xdmf = io.XDMFFile(MPI.COMM_WORLD, "circle.xdmf", "r")
+# msh = xdmf.read_mesh()
+msh = mesh.create_box(MPI.COMM_WORLD, [[0.0,0.0,0.0],[1.0,1.0,0.1]], [50,50,5])
 
 V = fem.functionspace(msh, ("Discontinuous Lagrange", k))
-W = fem.functionspace(msh, ("DG", 1, (2,)))
+W = fem.functionspace(msh, ("DG", 1, (msh.geometry.dim,)))
 
 u, v = ufl.TrialFunction(V), ufl.TestFunction(V)
 
@@ -45,10 +46,9 @@ w = fem.Function(W)
 
 
 def vel(x):
-    v0 = 0.5
-    r = np.sqrt(x[0] ** 2 + x[1] ** 2)
-    return [-v0 * np.pi * x[1] / r * np.sin(np.pi * r / 2),
-             v0 * np.pi * x[0] / r * np.sin(np.pi * r / 2)]
+    return [np.sin(np.pi * x[0]) * np.cos(np.pi * x[1]),
+            -np.cos(np.pi * x[0]) * np.sin(np.pi * x[1]),
+            x[2] * 0.0]
 
 
 w.interpolate(vel)
@@ -126,16 +126,17 @@ def apply_Minv(r: np.ndarray) -> np.ndarray:
 # must be included.  (For DG0 grad(v)=0 cell-wise, so it vanishes.)
 f = fem.Constant(msh, PETSc.ScalarType(0.0))
 
+dS = ufl.Measure("dS", domain=msh, metadata={'quadrature_degree': 3})
 L_space = (
     inner(f, v) * dx
     + inner(w * u_stage, grad(v)) * dx                          # volume term (new for DG1)
     - inner(2 * avg(lmbda * w * u_stage), jump(v, n_facet)) * dS  # interior upwind flux
 )
 
-for marker_id, u_in_func in inflow_bcs:
-    u_in = fem.Function(V)
-    u_in.interpolate(u_in_func)
-    L_space -= inner((1 - lmbda) * dot(w, n_facet) * u_in, v) * ds_meas(marker_id)
+# for marker_id, u_in_func in inflow_bcs:
+#     u_in = fem.Function(V)
+#     u_in.interpolate(u_in_func)
+#     L_space -= inner((1 - lmbda) * dot(w, n_facet) * u_in, v) * ds_meas(marker_id)
 
 L_space_form = fem.form(L_space)
 b = create_vector(V)   # reused across stages
@@ -190,6 +191,8 @@ for step in range(num_time_steps):
 
     # Stage 1
     k1 = compute_Minv_R(u_n)
+    print(np.linalg.norm(k1))
+
     u1.x.array[:] = un + dt * k1
     u1.x.scatter_forward()
 
