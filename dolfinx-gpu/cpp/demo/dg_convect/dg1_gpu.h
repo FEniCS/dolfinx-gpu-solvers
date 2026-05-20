@@ -14,6 +14,10 @@
 // CUDA/nvcc injects these implicitly, so no include is needed there.
 #if defined(__HIP__)
 #include <hip/hip_runtime.h>
+#define gpuError_t hipError_t
+#define gpuDeviceSynchronize hipDeviceSynchronize
+#define gpuSuccess hipSuccess
+#define gpuGetErrorString hipGetErrorString
 #endif
 
 // Accumulate the upwind convective flux across each interior facet into b
@@ -255,10 +259,9 @@ void run_dg1_convection(ContainerT& b, ContainerT& u_n, const ContainerT& w,
       normals.data().get(), facet_to_cell.data().get(), facets.data().get(),
       facets.size());
 
-  cudaError_t cudaerr = cudaDeviceSynchronize();
-  if (cudaerr != cudaSuccess)
-    printf("kernel launch failed with error \"%s\".\n",
-           cudaGetErrorString(cudaerr));
+  gpuError_t err = gpuDeviceSynchronize();
+  if (err != gpuSuccess)
+    printf("kernel launch failed with error \"%s\".\n", gpuGetErrorString(err));
 
   // inner(w*u, grad(v))*dx  (volume term, balances the facet flux above)
   grid_size.x = (cells.size() / block_size.x + 1);
@@ -266,8 +269,7 @@ void run_dg1_convection(ContainerT& b, ContainerT& u_n, const ContainerT& w,
                                             w.data().get(), Kadj.data().get(),
                                             cells.data().get(), cells.size());
 
-  cudaerr = cudaDeviceSynchronize();
-  if (cudaerr != cudaSuccess)
-    printf("kernel launch failed with error \"%s\".\n",
-           cudaGetErrorString(cudaerr));
+  err = gpuDeviceSynchronize();
+  if (err != gpuSuccess)
+    printf("kernel launch failed with error \"%s\".\n", gpuGetErrorString(err));
 }

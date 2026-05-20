@@ -24,8 +24,10 @@ using gpublasStatus_t = hipblasStatus_t;
 #define GPUBLAS_STATUS_SUCCESS HIPBLAS_STATUS_SUCCESS
 #define gpublasCreate hipblasCreate
 #define gpublasDestroy hipblasDestroy
-#define gpublasDmatinvBatched hipblasDmatinvBatched
-#define gpublasSmatinvBatched hipblasSmatinvBatched
+#define gpublasDgetrfBatched hipblasDgetrfBatched
+#define gpublasDgetriBatched hipblasDgetriBatched
+#define gpublasSgetrfBatched hipblasSgetrfBatched
+#define gpublasSgetriBatched hipblasSgetriBatched
 #define gpublasDgemvBatched hipblasDgemvBatched
 #define gpublasSgemvBatched hipblasSgemvBatched
 #define GPUBLAS_OP_T HIPBLAS_OP_T
@@ -36,8 +38,10 @@ using gpublasStatus_t = cublasStatus_t;
 #define GPUBLAS_STATUS_SUCCESS CUBLAS_STATUS_SUCCESS
 #define gpublasCreate cublasCreate
 #define gpublasDestroy cublasDestroy
-#define gpublasDmatinvBatched cublasDmatinvBatched
-#define gpublasSmatinvBatched cublasSmatinvBatched
+#define gpublasDgetrfBatched cublasDgetrfBatched
+#define gpublasDgetriBatched cublasDgetriBatched
+#define gpublasSgetrfBatched cublasSgetrfBatched
+#define gpublasSgetriBatched cublasSgetriBatched
 #define gpublasDgemvBatched cublasDgemvBatched
 #define gpublasSgemvBatched cublasSgemvBatched
 #define GPUBLAS_OP_T CUBLAS_OP_T
@@ -97,14 +101,16 @@ public:
     thrust::device_vector<T> A(A_cpu.begin(), A_cpu.end());
     _Ainv.resize(A.size());
 
-    std::vector<const T*> ptrA(ncells);
+    std::vector<T*> ptrA(ncells);
     std::vector<T*> ptrAinv(ncells);
     for (int i = 0; i < ncells; ++i)
     {
       ptrA[i] = A.data().get() + ndofs * ndofs * i;
       ptrAinv[i] = _Ainv.data().get() + ndofs * ndofs * i;
     }
-    thrust::device_vector<const T*> ptrA_device(ptrA.begin(), ptrA.end());
+
+    // A is changed by getrfBatched
+    thrust::device_vector<T*> ptrA_device(ptrA.begin(), ptrA.end());
     // Use a non-const pointer array here: matinvBatched writes T* output, not
     // const T*.  The member ptrAinv_device (also T*) is assigned after
     // inversion so that solve() can pass it directly to gemvBatched.
@@ -114,15 +120,23 @@ public:
     // Invert A blockwise
     if constexpr (std::is_same_v<double, T>)
     {
-      BLAS_CHECK(gpublasDmatinvBatched(_handle, ndofs, ptrA_device.data().get(),
-                                       ndofs, ptrAinv_device.data().get(),
-                                       ndofs, info.data().get(), ncells));
+      thrust::device_vector<int> ipiv(ndofs * ncells);
+      BLAS_CHECK(gpublasDgetrfBatched(_handle, ndofs, ptrA_device.data().get(),
+                                      ndofs, ipiv.data().get(),
+                                      info.data().get(), ncells));
+      BLAS_CHECK(gpublasDgetriBatched(
+          _handle, ndofs, ptrA_device.data().get(), ndofs, ipiv.data().get(),
+          ptrAinv_device.data().get(), ndofs, info.data().get(), ncells));
     }
     else if constexpr (std::is_same_v<float, T>)
     {
-      BLAS_CHECK(gpublasSmatinvBatched(_handle, ndofs, ptrA_device.data().get(),
-                                       ndofs, ptrAinv_device.data().get(),
-                                       ndofs, info.data().get(), ncells));
+      thrust::device_vector<int> ipiv(ndofs * ncells);
+      BLAS_CHECK(gpublasSgetrfBatched(_handle, ndofs, ptrA_device.data().get(),
+                                      ndofs, ipiv.data().get(),
+                                      info.data().get(), ncells));
+      BLAS_CHECK(gpublasSgetriBatched(
+          _handle, ndofs, ptrA_device.data().get(), ndofs, ipiv.data().get(),
+          ptrAinv_device.data().get(), ndofs, info.data().get(), ncells));
     }
     else
       throw std::runtime_error("Unsupported scalar type");

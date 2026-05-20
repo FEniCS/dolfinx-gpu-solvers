@@ -292,13 +292,13 @@ int main(int argc, char* argv[])
     // -----------------------------------------------------------------------
     // Output file (ADIOS2 / VTX format, produces u.bp)
     // -----------------------------------------------------------------------
-    io::VTXWriter<U> vtx(msh->comm(), "u.bp", {u_n});
+    //    io::VTXWriter<U> vtx(msh->comm(), "u.bp", {u_n});
 
     // -----------------------------------------------------------------------
     // Time-stepping loop
     // -----------------------------------------------------------------------
     double t = 0.0;
-    vtx.write(t);
+    //    vtx.write(t);
 
     for (int step = 0; step < num_steps; ++step)
     {
@@ -343,7 +343,7 @@ int main(int argc, char* argv[])
       {
         thrust::copy(un_device.array().begin(), un_device.array().end(),
                      u_arr.begin());
-        vtx.write(t);
+        //        vtx.write(t);
       }
     }
 
