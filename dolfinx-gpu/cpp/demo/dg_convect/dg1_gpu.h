@@ -55,6 +55,7 @@ __global__ void dg1_convection(T* b, const T* u_n, const T* w, const T* phi,
 {
   // Load a set of facets
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
   if (idx >= n_facets)
     return;
   int fglobal = facets[idx];
@@ -134,6 +135,7 @@ __global__ void dg1_convection(T* b, const T* u_n, const T* w, const T* phi,
   // Integrate at quadrature points (weight = 1/12)
   T* b0 = b + c0 * ndof;
   T* b1 = b + c1 * ndof;
+
   for (int i = 0; i < ndof; ++i)
   {
     T b0val = 0;
@@ -143,8 +145,11 @@ __global__ void dg1_convection(T* b, const T* u_n, const T* w, const T* phi,
       b0val -= phi[flocal_0 * ndof * nq + qp0[iq] * ndof + i] * flux[iq];
       b1val += phi[flocal_1 * ndof * nq + qp1[iq] * ndof + i] * flux[iq];
     }
-    atomicAdd(&b0[i], b0val / T(12));
-    atomicAdd(&b1[i], b1val / T(12));
+    b0val /= T(12);
+    b1val /= T(12);
+
+    atomicAdd(&b0[i], b0val);
+    atomicAdd(&b1[i], b1val);
   }
 }
 
@@ -201,7 +206,8 @@ __global__ void dg1_uwgradv(T* b, const T* u_n, const T* w, const T* Kadj,
       bval += wr[iq * 3] * dphi[0][i] + wr[iq * 3 + 1] * dphi[1][i]
               + wr[iq * 3 + 2] * dphi[2][i];
     }
-    atomicAdd(&b[cglobal * ndof + i], bval / T(24));
+    bval /= T(24);
+    atomicAdd(&b[cglobal * ndof + i], bval);
   }
 }
 
@@ -228,18 +234,19 @@ void run_dg1_convection(ContainerT& b, ContainerT& u_n, const ContainerT& w,
       normals.data().get(), facet_to_cell.data().get(), facets.data().get(),
       facets.size());
 
-  cudaDeviceSynchronize();
-
-  std::vector<T> bcpu(b.size());
-  thrust::copy(b.begin(), b.end(), bcpu.begin());
-  T bnorm = std::inner_product(bcpu.begin(), bcpu.end(), bcpu.begin(), T(0));
-  std::cout << "bnorm = " << std::sqrt(bnorm) << "\n";
+  cudaError_t cudaerr = cudaDeviceSynchronize();
+  if (cudaerr != cudaSuccess)
+    printf("kernel launch failed with error \"%s\".\n",
+           cudaGetErrorString(cudaerr));
 
   // // inner(w*u, grad(v))*dx
-  // grid_size.x = (cells.size() / block_size.x + 1);
-  // dg1_uwgradv<T><<<grid_size, block_size>>>(b.data().get(), u_n.data().get(),
-  //                                           w.data().get(),
-  //                                           Kadj.data().get(),
-  //                                           cells.data().get(),
-  //                                           cells.size());
+  grid_size.x = (cells.size() / block_size.x + 1);
+  dg1_uwgradv<T><<<grid_size, block_size>>>(b.data().get(), u_n.data().get(),
+                                            w.data().get(), Kadj.data().get(),
+                                            cells.data().get(), cells.size());
+
+  cudaerr = cudaDeviceSynchronize();
+  if (cudaerr != cudaSuccess)
+    printf("kernel launch failed with error \"%s\".\n",
+           cudaGetErrorString(cudaerr));
 }
