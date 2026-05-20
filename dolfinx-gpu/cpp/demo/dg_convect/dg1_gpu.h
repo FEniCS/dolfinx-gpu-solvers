@@ -168,8 +168,9 @@ __global__ void dg1_uwgradv(T* b, const T* u_n, const T* w, const T* detJ,
                                 0.138196601125011, 0.585410196624969},
                                {0.585410196624967, 0.1381966011250109,
                                 0.1381966011250109, 0.1381966011250109}};
-  constexpr T dphi[3][nq][ndof] = {};
+  constexpr T dphi[3][ndof] = {{-1, 1, 0, 0}, {-1, 0, 1, 0}, {-1, 0, 0, 1}};
 
+  T wr[nq * 3];
   for (int iq = 0; iq < nq; ++iq)
   {
     // u and w at quadrature points
@@ -184,16 +185,24 @@ __global__ void dg1_uwgradv(T* b, const T* u_n, const T* w, const T* detJ,
       u0 += u_n[cglobal * ndof + i] * phi[iq][i];
     }
 
-    // Geometric transform with J^-T (assumed cellwise constant)
+    // Geometric transform with K=adj(J) (assumed cellwise constant)
     const T* K = Kadj + cglobal * 9;
     T wr[3];
-    wr[0] = u0 * (K[0] * w0[0] + K[1] * w0[1] + K[2] * w0[2]);
-    wr[1] = u0 * (K[3] * w0[0] + K[4] * w0[1] + K[5] * w0[2]);
-    wr[2] = u0 * (K[6] * w0[0] + K[7] * w0[1] + K[8] * w0[2]);
+    wr[iq * 3] = u0 * (K[0] * w0[0] + K[1] * w0[1] + K[2] * w0[2]);
+    wr[iq * 3 + 1] = u0 * (K[3] * w0[0] + K[4] * w0[1] + K[5] * w0[2]);
+    wr[iq * 3 + 2] = u0 * (K[6] * w0[0] + K[7] * w0[1] + K[8] * w0[2]);
   }
 
-  // TODO: Multiply by grad(v) - need grad(phi) etc.
-  // insert into b
+  for (int i = 0; i < ndof; ++i)
+  {
+    T bval = 0;
+    for (int iq = 0; iq < nq; ++iq)
+    {
+      bval += wr[iq * 3] * dphi[0][i] + wr[iq * 3 + 1] * dphi[1][i]
+              + wr[iq * 3 + 2] * dphi[2][i];
+    }
+    atomicAdd(&b[cglobal * ndof + i], bval / T(24));
+  }
 }
 
 // Launches dg1_convection with cudaDeviceSynchronize() after the kernel.
@@ -204,7 +213,7 @@ __global__ void dg1_uwgradv(T* b, const T* u_n, const T* w, const T* detJ,
 template <typename ContainerT, typename ContainerI>
 void run_dg1_convection(ContainerT& b, ContainerT& u_n, const ContainerT& w,
                         const ContainerT& phi, const ContainerT& normals,
-                        const ContainerT& detJ, const ContainerT& G,
+                        const ContainerT& detJ, const ContainerT& Kadj,
                         const ContainerI& facet_to_cell,
                         const ContainerI& facets, const ContainerI& cells,
                         double dt)
@@ -227,5 +236,5 @@ void run_dg1_convection(ContainerT& b, ContainerT& u_n, const ContainerT& w,
   grid_size.x = (cells.size() / block_size.x + 1);
   dg1_uwgradv<T><<<grid_size, block_size>>>(
       b.data().get(), u_n.data().get(), w.data().get(), detJ.data().get(),
-      G.data().get(), cells.data().get(), cells.size());
+      Kadj.data().get(), cells.data().get(), cells.size());
 }
