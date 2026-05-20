@@ -184,6 +184,7 @@ __global__ void dg1_uwgradv(T* b, const T* u_n, const T* w, const T* Kadj,
   int cglobal = cells[idx];
 
   // Four point quadrature in cell (qwts=1/24)
+  // TODO: pass phi/dphi as a parameter
   constexpr int nq = 4;
   constexpr int ndof = 4;
   constexpr T phi[nq][ndof] = {{0.1381966011250091, 0.5854101966249688,

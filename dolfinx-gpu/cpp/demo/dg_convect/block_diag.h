@@ -148,7 +148,11 @@ public:
   /// and that dofs of b and u follow the same layout
   /// @param b RHS input vector
   /// @param u Solution vector
-  void solve(const thrust::device_vector<T>& b, thrust::device_vector<T>& u)
+  /// @param alpha
+  /// @param beta Factor to apply to u, so we can
+  /// solve u = alpha(A^-1 b) + beta u
+  void solve(const thrust::device_vector<T>& b, thrust::device_vector<T>& u,
+             T alpha = T{1}, T beta = T{0})
   {
     if (b.size() * ndofs != _Ainv.size() or b.size() != u.size())
       throw std::runtime_error("Size mismatch in BlockDiagonalSolver");
@@ -165,10 +169,6 @@ public:
     thrust::device_vector<T*> ptru_device(ptru.begin(), ptru.end());
 
     // NB use transpose operator, since original A was Row Major.
-    // alpha and beta must match the scalar type T.
-    const T alpha = T{1};
-    const T beta = T{0};
-
     if constexpr (std::is_same_v<double, T>)
     {
       BLAS_CHECK(gpublasDgemvBatched(_handle, GPUBLAS_OP_T, ndofs, ndofs,
