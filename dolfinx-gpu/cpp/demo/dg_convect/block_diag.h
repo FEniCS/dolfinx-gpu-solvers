@@ -95,8 +95,17 @@ public:
     // Create a GPU BLAS context
     BLAS_CHECK(gpublasCreate(&_handle));
 
-    ndofs = a.function_spaces()[0]->dofmap()->element_dof_layout().num_dofs();
+    int bs = a.function_spaces()[0]->dofmap()->bs();
+    ndofs = a.function_spaces()[0]->dofmap()->element_dof_layout().num_dofs()
+            * bs;
     int ncells = static_cast<int>(A_cpu.size()) / (ndofs * ndofs);
+
+    if (ncells
+        != a.mesh()
+               ->topology()
+               ->index_map(a.mesh()->topology()->dim())
+               ->size_local())
+      throw std::runtime_error("Cell count mismatch");
 
     // Allocate memory for A, A^-1
     thrust::device_vector<T> A(A_cpu.begin(), A_cpu.end());

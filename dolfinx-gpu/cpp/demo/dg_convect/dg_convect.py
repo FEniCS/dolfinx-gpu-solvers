@@ -53,7 +53,7 @@ mesh = Mesh(coord_element)
 # ---------------------------------------------------------------------------
 # Finite element spaces
 # ---------------------------------------------------------------------------
-e   = element("DG", "tetrahedron", 1)           # scalar DG1
+e   = element("DG", "tetrahedron", 1, shape=(2,))           # scalar DG1
 e_w = element("DG", "tetrahedron", 1, shape=(3,))  # vector DG1 (3 components)
 
 V = FunctionSpace(mesh, e)
@@ -89,10 +89,10 @@ lmbda = conditional(gt(dot(w, n), 0), 1, 0)
 #   If dot(w, n('+')) > 0 then the upwind value is u_n('+'), giving
 #   lmbda('+') = 1, lmbda('-') = 0  =>  2 avg(lmbda w u_n) = w u_n('+').
 # ---------------------------------------------------------------------------
-L = (
-    inner(u_n / delta_t, v) * dx
-    - inner(2 * avg(lmbda * w * u_n), jump(v, n)) * dS
-)
+# L = (
+#    inner(u_n / delta_t, v) * dx
+#    - inner(2 * avg(lmbda * w * u_n), jump(v, n)) * dS
+#)
 
 # ---------------------------------------------------------------------------
 # Form m – mass-matrix diagonal

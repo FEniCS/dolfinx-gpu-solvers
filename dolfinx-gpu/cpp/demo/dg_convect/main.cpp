@@ -200,7 +200,8 @@ int main(int argc, char* argv[])
 
     auto V
         = std::make_shared<fem::FunctionSpace<U>>(fem::create_functionspace<U>(
-            msh, std::make_shared<fem::FiniteElement<U>>(elem_dg1)));
+            msh, std::make_shared<fem::FiniteElement<U>>(
+                     elem_dg1, std::vector<std::size_t>{2})));
 
     // Vector DG1: same scalar element, value_shape = {3} (3 spatial components)
     auto W
@@ -219,15 +220,19 @@ int main(int argc, char* argv[])
         [](auto x) -> std::pair<std::vector<T>, std::vector<std::size_t>>
         {
           const std::size_t np = x.extent(1);
-          std::vector<T> vals(np);
-          std::ranges::transform(
-              std::views::iota(std::size_t(0), np), vals.begin(),
-              [&x](std::size_t p)
-              {
-                return std::sin(4 * std::numbers::pi * x(0, p))
-                       * std::sin(4 * std::numbers::pi * x(1, p));
-              });
-          return {vals, {np}};
+          std::vector<T> vals(2 * np, 0.0);
+          for (std::size_t p = 0; p < np; ++p)
+          {
+            vals[p] = std::sin(4 * std::numbers::pi * x(0, p))
+                      * std::sin(4 * std::numbers::pi * x(1, p));
+            vals[np + p] = std::sin(2 * std::numbers::pi * x(0, p))
+                           * std::sin(2 * std::numbers::pi * x(1, p));
+            //            vals[np * 2 + p] = std::sin(std::numbers::pi * x(0,
+            //            p))
+            //                               * std::sin(std::numbers::pi * x(1,
+            //                               p));
+          }
+          return {vals, {2, np}};
         });
 
     // Velocity: divergence-free rotation  w = (sin(pi x)cos(pi y),
@@ -263,9 +268,10 @@ int main(int argc, char* argv[])
     //   m_form : mass-matrix diagonal (cell integral of c_one / dt)
     // -----------------------------------------------------------------------
     // Single-domain problems pass an empty entity_maps vector.
-    fem::Form<T> L_form
-        = fem::create_form<T>(*form_dg_convect_L, {V}, {{"u_n", u_n}, {"w", w}},
-                              {{"delta_t", dt_const}}, {}, {});
+    //    fem::Form<T> L_form
+    //        = fem::create_form<T>(*form_dg_convect_L, {V}, {{"u_n", u_n},
+    //        {"w", w}},
+    //                              {{"delta_t", dt_const}}, {}, {});
 
     fem::Form<T> a_form = fem::create_form<T>(*form_dg_convect_a, {V, V}, {},
                                               {{"delta_t", dt_const}}, {}, {});
