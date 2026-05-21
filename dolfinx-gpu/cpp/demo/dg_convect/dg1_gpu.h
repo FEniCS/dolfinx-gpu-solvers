@@ -42,7 +42,8 @@
 // @param b             RHS accumulator, length num_cells*ndof. Zero before
 //                      launch.
 // @param u_n           DG1 solution coefficients at the previous time step,
-//                      layout [cell*ndof + dof].
+//                      layout [(cell*ndof + dof)*nc + component].
+// @param nc            Number of components in u_n
 // @param w             DG1 velocity coefficients, layout
 //                      [(cell*ndof + dof)*3 + component].
 // @param phi           Basis function values at the 6 Strang-Fix quadrature
@@ -57,7 +58,7 @@
 //                      local facet = value & 0x03.
 // @param facets        Interior facet global indices to process.
 // @param n_facets      Length of facets.
-template <typename T>
+template <typename T, int nc>
 __global__ void dg1_convection(T* b, const T* u_n, const T* w, const T* phi,
                                const T* normals,
                                const std::int32_t* facet_to_cell,
@@ -70,12 +71,6 @@ __global__ void dg1_convection(T* b, const T* u_n, const T* w, const T* phi,
   constexpr int ndof = 4;
   // Number of quadrature points per facet
   constexpr int nq = 6;
-
-  __shared__ T _phi[ndof * nq * 4];
-  if (threadIdx.x < ndof * nq * 4)
-    _phi[threadIdx.x] = phi[threadIdx.x];
-
-  __syncthreads();
 
   if (idx >= n_facets)
     return;
@@ -106,15 +101,15 @@ __global__ void dg1_convection(T* b, const T* u_n, const T* w, const T* phi,
 
   const T* n = normals + fglobal * 3;
 
-  T b0val[ndof] = {0};
-  T b1val[ndof] = {0};
+  T b0val[ndof * nc] = {0};
+  T b1val[ndof * nc] = {0};
   for (int iq = 0; iq < nq; ++iq)
   {
     // Compute w.n at quadrature points on facet of cell0
     T w0n = 0;
     // Get u value at quadrature points on facet, cell0
-    const T* u0 = u_n + c0 * ndof;
-    T uf0 = 0;
+    const T* u0 = u_n + (c0 * ndof * nc);
+    T uf0[nc] = {0};
     for (int i = 0; i < ndof; ++i)
     {
       const T* w0 = w + (c0 * ndof + i) * 3;
@@ -122,14 +117,15 @@ __global__ void dg1_convection(T* b, const T* u_n, const T* w, const T* phi,
       w0n += w0[0] * phi_i * n[0];
       w0n += w0[1] * phi_i * n[1];
       w0n += w0[2] * phi_i * n[2];
-      uf0 += u0[i] * phi_i;
+      for (int c = 0; c < nc; ++c)
+        uf0[c] += u0[i * nc + c] * phi_i;
     }
 
     // Compute w.n at quadrature points on facet of cell1
     T w1n = 0;
     // Get u value at quadrature points on facet, cell1
-    const T* u1 = u_n + c1 * ndof;
-    T uf1 = 0;
+    const T* u1 = u_n + (c1 * ndof * nc);
+    T uf1[nc] = {0};
     for (int i = 0; i < ndof; ++i)
     {
       const T* w1 = w + (c1 * ndof + i) * 3;
@@ -137,28 +133,34 @@ __global__ void dg1_convection(T* b, const T* u_n, const T* w, const T* phi,
       w1n += w1[0] * phi_i * n[0];
       w1n += w1[1] * phi_i * n[1];
       w1n += w1[2] * phi_i * n[2];
-      uf1 += u1[i] * phi_i;
+      for (int c = 0; c < nc; ++c)
+        uf1[c] += u1[i * nc + c] * phi_i;
     }
 
     // Apply upwinding at quadrature points
-    T flux = fmax(w0n, 0) * uf0 + fmin(w1n, 0) * uf1;
-    for (int i = 0; i < ndof; ++i)
+    for (int c = 0; c < nc; ++c)
     {
-      b0val[i] -= phi[flocal_0 * ndof * nq + qp0[iq] * ndof + i] * flux;
-      b1val[i] += phi[flocal_1 * ndof * nq + qp1[iq] * ndof + i] * flux;
+      T flux = fmax(w0n, 0) * uf0[c] + fmin(w1n, 0) * uf1[c];
+      for (int i = 0; i < ndof; ++i)
+      {
+        b0val[i * nc + c]
+            -= phi[flocal_0 * ndof * nq + qp0[iq] * ndof + i] * flux;
+        b1val[i * nc + c]
+            += phi[flocal_1 * ndof * nq + qp1[iq] * ndof + i] * flux;
+      }
     }
   }
 
   // Locate b cell dofs in output data
   // Integrate at quadrature points (weight = 1/12)
-  T* b0 = b + c0 * ndof;
-  T* b1 = b + c1 * ndof;
-  for (int i = 0; i < ndof; ++i)
+  T* b0 = b + c0 * ndof * nc;
+  T* b1 = b + c1 * ndof * nc;
+  for (int ic = 0; ic < ndof * nc; ++ic)
   {
-    b0val[i] /= T(12);
-    b1val[i] /= T(12);
-    atomicAdd(&b0[i], b0val[i]);
-    atomicAdd(&b1[i], b1val[i]);
+    b0val[ic] /= T(12);
+    b1val[ic] /= T(12);
+    atomicAdd(&b0[ic], b0val[ic]);
+    atomicAdd(&b1[ic], b1val[ic]);
   }
 }
 
@@ -182,7 +184,7 @@ __global__ void dg1_convection(T* b, const T* u_n, const T* w, const T* phi,
 //               adjugate is used directly.
 // @param cells  Cell indices to process.
 // @param n_cells Length of cells.
-template <typename T>
+template <typename T, int nc>
 __global__ void dg1_uwgradv(T* b, const T* u_n, const T* w, const T* Kadj,
                             const int* cells, int n_cells)
 {
@@ -206,11 +208,11 @@ __global__ void dg1_uwgradv(T* b, const T* u_n, const T* w, const T* Kadj,
                                 0.1381966011250109, 0.1381966011250109}};
   constexpr T dphi[3][ndof] = {{-1, 1, 0, 0}, {-1, 0, 1, 0}, {-1, 0, 0, 1}};
 
-  T wr[nq * 3];
+  T bval[ndof * nc] = {0};
   for (int iq = 0; iq < nq; ++iq)
   {
     // u and w at quadrature points
-    T u0 = 0;
+    T u0[nc] = {0};
     T w0[3] = {0};
     for (int i = 0; i < ndof; ++i)
     {
@@ -218,26 +220,32 @@ __global__ void dg1_uwgradv(T* b, const T* u_n, const T* w, const T* Kadj,
       w0[0] += wcell[0] * phi[iq][i];
       w0[1] += wcell[1] * phi[iq][i];
       w0[2] += wcell[2] * phi[iq][i];
-      u0 += u_n[cglobal * ndof + i] * phi[iq][i];
+      for (int c = 0; c < nc; ++c)
+        u0[c] += u_n[(cglobal * ndof + i) * nc + c] * phi[iq][i];
     }
 
     // Geometric transform with K=adj(J) (assumed cellwise constant)
     const T* K = Kadj + cglobal * 9;
-    wr[iq * 3] = u0 * (K[0] * w0[0] + K[1] * w0[1] + K[2] * w0[2]);
-    wr[iq * 3 + 1] = u0 * (K[3] * w0[0] + K[4] * w0[1] + K[5] * w0[2]);
-    wr[iq * 3 + 2] = u0 * (K[6] * w0[0] + K[7] * w0[1] + K[8] * w0[2]);
+    T wr[3] = {0};
+    wr[0] = (K[0] * w0[0] + K[1] * w0[1] + K[2] * w0[2]);
+    wr[1] = (K[3] * w0[0] + K[4] * w0[1] + K[5] * w0[2]);
+    wr[2] = (K[6] * w0[0] + K[7] * w0[1] + K[8] * w0[2]);
+
+    for (int i = 0; i < ndof; ++i)
+    {
+      for (int c = 0; c < nc; ++c)
+      {
+        bval[i * nc + c]
+            += (wr[0] * dphi[0][i] + wr[1] * dphi[1][i] + wr[2] * dphi[2][i])
+               * u0[c];
+      }
+    }
   }
 
-  for (int i = 0; i < ndof; ++i)
+  for (int ic = 0; ic < ndof * nc; ++ic)
   {
-    T bval = 0;
-    for (int iq = 0; iq < nq; ++iq)
-    {
-      bval += wr[iq * 3] * dphi[0][i] + wr[iq * 3 + 1] * dphi[1][i]
-              + wr[iq * 3 + 2] * dphi[2][i];
-    }
-    bval /= T(24);
-    atomicAdd(&b[cglobal * ndof + i], bval);
+    bval[ic] /= T(24);
+    atomicAdd(&b[cglobal * ndof * nc + ic], bval[ic]);
   }
 }
 
@@ -260,8 +268,10 @@ void run_dg1_convection(ContainerT& b, ContainerT& u_n, const ContainerT& w,
   dim3 block_size(512);
   dim3 grid_size(facets.size() / block_size.x + 1);
 
+  // number of components in u_n = 1
+
   // upwind flux - inner(2 * avg(lmbda * w * u_n), jump(v, n)) * dS
-  dg1_convection<T><<<grid_size, block_size>>>(
+  dg1_convection<T, 1><<<grid_size, block_size>>>(
       b.data().get(), u_n.data().get(), w.data().get(), phi.data().get(),
       normals.data().get(), facet_to_cell.data().get(), facets.data().get(),
       facets.size());
@@ -272,9 +282,9 @@ void run_dg1_convection(ContainerT& b, ContainerT& u_n, const ContainerT& w,
 
   // inner(w*u, grad(v))*dx  (volume term, balances the facet flux above)
   grid_size.x = (cells.size() / block_size.x + 1);
-  dg1_uwgradv<T><<<grid_size, block_size>>>(b.data().get(), u_n.data().get(),
-                                            w.data().get(), Kadj.data().get(),
-                                            cells.data().get(), cells.size());
+  dg1_uwgradv<T, 1><<<grid_size, block_size>>>(
+      b.data().get(), u_n.data().get(), w.data().get(), Kadj.data().get(),
+      cells.data().get(), cells.size());
 
   err = gpuDeviceSynchronize();
   if (err != gpuSuccess)
