@@ -25,6 +25,7 @@
 #include <basix/finite-element.h>
 #include <basix/quadrature.h>
 #include <dolfinx.h>
+#include <dolfinx/common/Timer.h>
 #include <dolfinx/fem/Constant.h>
 #include <dolfinx/io/ADIOS2Writers.h>
 #include <dolfinx/la/Vector.h>
@@ -52,17 +53,17 @@ int main(int argc, char* argv[])
     // Simulation parameters
     // -----------------------------------------------------------------------
     constexpr int n = 50;
-    constexpr double t_end = 2.0;
-    constexpr int num_steps = 1000;
+    constexpr double t_end = 8.0;
+    constexpr int num_steps = 4000;
     constexpr double dt = t_end / num_steps;
-    constexpr int io_stride = 5; // write output every this many steps
+    constexpr int io_stride = 20; // write output every this many steps
 
     // -----------------------------------------------------------------------
     // Mesh: box of tets, shared-facet ghost mode (needed for dS)
     // -----------------------------------------------------------------------
     auto part = mesh::create_cell_partitioner(mesh::GhostMode::shared_facet);
     auto msh = std::make_shared<mesh::Mesh<U>>(mesh::create_box<U>(
-        MPI_COMM_WORLD, {{{0.0, 0.0, 0.0}, {1.0, 1.0, 0.1}}}, {n, n, 5},
+        MPI_COMM_WORLD, {{{0.0, 0.0, 0.0}, {1.0, 1.0, 0.1}}}, {n, n, n / 10},
         mesh::CellType::tetrahedron, part));
 
     // Ensure facet entities and facet↔cell connectivity exist
@@ -292,14 +293,15 @@ int main(int argc, char* argv[])
     // -----------------------------------------------------------------------
     // Output file (ADIOS2 / VTX format, produces u.bp)
     // -----------------------------------------------------------------------
-    //    io::VTXWriter<U> vtx(msh->comm(), "u.bp", {u_n});
+    double t = 0.0;
+#ifdef HAS_ADIOS2
+    io::VTXWriter<U> vtx(msh->comm(), "u.bp", {u_n});
+    vtx.write(t);
+#endif
 
     // -----------------------------------------------------------------------
     // Time-stepping loop
     // -----------------------------------------------------------------------
-    double t = 0.0;
-    //    vtx.write(t);
-
     for (int step = 0; step < num_steps; ++step)
     {
       std::cout << step << "\n";
@@ -339,12 +341,15 @@ int main(int argc, char* argv[])
                         [] __device__(T x, T y)
                         { return (x + 2.0 * y) / 3.0; });
 
+#ifdef HAS_ADIOS2
       if ((step + 1) % io_stride == 0)
       {
+        dolfinx::common::Timer("*DG: I/O");
         thrust::copy(un_device.array().begin(), un_device.array().end(),
                      u_arr.begin());
-        //        vtx.write(t);
+        vtx.write(t);
       }
+#endif
     }
 
     // Print final L2 norm as a basic sanity check

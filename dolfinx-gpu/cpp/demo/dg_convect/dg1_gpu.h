@@ -7,6 +7,7 @@
 
 #pragma once
 #include <cstdint>
+#include <dolfinx/common/Timer.h>
 #include <thrust/device_vector.h>
 
 // HIP requires the runtime header to be included explicitly for device
@@ -18,6 +19,11 @@
 #define gpuDeviceSynchronize hipDeviceSynchronize
 #define gpuSuccess hipSuccess
 #define gpuGetErrorString hipGetErrorString
+#else
+#define gpuError_t cudaError_t
+#define gpuDeviceSynchronize cudaDeviceSynchronize
+#define gpuSuccess cudaSuccess
+#define gpuGetErrorString cudaGetErrorString
 #endif
 
 // Accumulate the upwind convective flux across each interior facet into b
@@ -92,6 +98,12 @@ __global__ void dg1_convection(T* b, const T* u_n, const T* w, const T* phi,
   // Number of quadrature points per facet
   constexpr int nq = 6;
 
+  __shared__ T _phi[ndof * nq];
+  if (threadIdx.x < ndof * nq)
+    _phi[threadIdx.x] = phi[threadIdx.x];
+
+  __syncthreads();
+
   const T* n = normals + fglobal * 3;
 
   T flux[nq];
@@ -102,7 +114,7 @@ __global__ void dg1_convection(T* b, const T* u_n, const T* w, const T* phi,
     for (int i = 0; i < ndof; ++i)
     {
       const T* w0 = w + (c0 * ndof + i) * 3;
-      T phi_i = phi[flocal_0 * ndof * nq + qp0[iq] * ndof + i];
+      T phi_i = _phi[flocal_0 * ndof * nq + qp0[iq] * ndof + i];
       w0n += w0[0] * phi_i * n[0];
       w0n += w0[1] * phi_i * n[1];
       w0n += w0[2] * phi_i * n[2];
@@ -113,7 +125,7 @@ __global__ void dg1_convection(T* b, const T* u_n, const T* w, const T* phi,
     for (int i = 0; i < ndof; ++i)
     {
       const T* w1 = w + (c1 * ndof + i) * 3;
-      T phi_i = phi[flocal_1 * ndof * nq + qp1[iq] * ndof + i];
+      T phi_i = _phi[flocal_1 * ndof * nq + qp1[iq] * ndof + i];
       w1n += w1[0] * phi_i * n[0];
       w1n += w1[1] * phi_i * n[1];
       w1n += w1[2] * phi_i * n[2];
@@ -123,13 +135,13 @@ __global__ void dg1_convection(T* b, const T* u_n, const T* w, const T* phi,
     const T* u0 = u_n + c0 * ndof;
     T uf0 = 0;
     for (int i = 0; i < ndof; ++i)
-      uf0 += u0[i] * phi[flocal_0 * ndof * nq + qp0[iq] * ndof + i];
+      uf0 += u0[i] * _phi[flocal_0 * ndof * nq + qp0[iq] * ndof + i];
 
     // Get u value at quadrature points on facet, cell1
     const T* u1 = u_n + c1 * ndof;
     T uf1 = 0;
     for (int i = 0; i < ndof; ++i)
-      uf1 += u1[i] * phi[flocal_1 * ndof * nq + qp1[iq] * ndof + i];
+      uf1 += u1[i] * _phi[flocal_1 * ndof * nq + qp1[iq] * ndof + i];
 
     // Apply upwinding at quadrature points
     flux[iq] = fmax(w0n, 0) * uf0 + fmin(w1n, 0) * uf1;
@@ -146,8 +158,8 @@ __global__ void dg1_convection(T* b, const T* u_n, const T* w, const T* phi,
     T b1val = 0;
     for (int iq = 0; iq < nq; ++iq)
     {
-      b0val -= phi[flocal_0 * ndof * nq + qp0[iq] * ndof + i] * flux[iq];
-      b1val += phi[flocal_1 * ndof * nq + qp1[iq] * ndof + i] * flux[iq];
+      b0val -= _phi[flocal_0 * ndof * nq + qp0[iq] * ndof + i] * flux[iq];
+      b1val += _phi[flocal_1 * ndof * nq + qp1[iq] * ndof + i] * flux[iq];
     }
     b0val /= T(12);
     b1val /= T(12);
@@ -248,6 +260,8 @@ void run_dg1_convection(ContainerT& b, ContainerT& u_n, const ContainerT& w,
                         const ContainerI& facets, const ContainerI& cells)
 {
   using T = typename ContainerT::value_type;
+
+  dolfinx::common::Timer tsolve("*DG: Compute advection");
 
   // Choose a good block size
   dim3 block_size(512);

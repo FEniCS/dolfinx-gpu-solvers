@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include <dolfinx/common/Timer.h>
 #include <dolfinx/fem/Form.h>
 #include <dolfinx/fem/assembler.h>
 #include <dolfinx/la/Vector.h>
@@ -168,6 +169,8 @@ public:
   void solve(const thrust::device_vector<T>& b, thrust::device_vector<T>& u,
              T alpha = T{1}, T beta = T{0})
   {
+    dolfinx::common::Timer tsolve("*DG: Solve block diagonal system");
+
     if (b.size() * ndofs != _Ainv.size() or b.size() != u.size())
       throw std::runtime_error("Size mismatch in BlockDiagonalSolver");
 
