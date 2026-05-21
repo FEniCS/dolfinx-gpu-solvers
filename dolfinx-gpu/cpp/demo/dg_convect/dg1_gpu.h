@@ -66,6 +66,17 @@ __global__ void dg1_convection(T* b, const T* u_n, const T* w, const T* phi,
   // Load a set of facets
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
+  // Number of DoFs per cell (DG1)
+  constexpr int ndof = 4;
+  // Number of quadrature points per facet
+  constexpr int nq = 6;
+
+  __shared__ T _phi[ndof * nq * 4];
+  if (threadIdx.x < ndof * nq * 4)
+    _phi[threadIdx.x] = phi[threadIdx.x];
+
+  __syncthreads();
+
   if (idx >= n_facets)
     return;
   int fglobal = facets[idx];
@@ -93,79 +104,61 @@ __global__ void dg1_convection(T* b, const T* u_n, const T* w, const T* phi,
   const std::int8_t* qp0 = qperm + fperm_0 * 6;
   const std::int8_t* qp1 = qperm + fperm_1 * 6;
 
-  // Number of DoFs per cell (DG1)
-  constexpr int ndof = 4;
-  // Number of quadrature points per facet
-  constexpr int nq = 6;
-
-  __shared__ T _phi[ndof * nq];
-  if (threadIdx.x < ndof * nq)
-    _phi[threadIdx.x] = phi[threadIdx.x];
-
-  __syncthreads();
-
   const T* n = normals + fglobal * 3;
 
-  T flux[nq];
+  T b0val[ndof] = {0};
+  T b1val[ndof] = {0};
   for (int iq = 0; iq < nq; ++iq)
   {
     // Compute w.n at quadrature points on facet of cell0
     T w0n = 0;
-    for (int i = 0; i < ndof; ++i)
-    {
-      const T* w0 = w + (c0 * ndof + i) * 3;
-      T phi_i = _phi[flocal_0 * ndof * nq + qp0[iq] * ndof + i];
-      w0n += w0[0] * phi_i * n[0];
-      w0n += w0[1] * phi_i * n[1];
-      w0n += w0[2] * phi_i * n[2];
-    }
-
-    // Compute w.n at quadrature points on facet of cell1
-    T w1n = 0;
-    for (int i = 0; i < ndof; ++i)
-    {
-      const T* w1 = w + (c1 * ndof + i) * 3;
-      T phi_i = _phi[flocal_1 * ndof * nq + qp1[iq] * ndof + i];
-      w1n += w1[0] * phi_i * n[0];
-      w1n += w1[1] * phi_i * n[1];
-      w1n += w1[2] * phi_i * n[2];
-    }
-
     // Get u value at quadrature points on facet, cell0
     const T* u0 = u_n + c0 * ndof;
     T uf0 = 0;
     for (int i = 0; i < ndof; ++i)
-      uf0 += u0[i] * _phi[flocal_0 * ndof * nq + qp0[iq] * ndof + i];
+    {
+      const T* w0 = w + (c0 * ndof + i) * 3;
+      T phi_i = phi[flocal_0 * ndof * nq + qp0[iq] * ndof + i];
+      w0n += w0[0] * phi_i * n[0];
+      w0n += w0[1] * phi_i * n[1];
+      w0n += w0[2] * phi_i * n[2];
+      uf0 += u0[i] * phi_i;
+    }
 
+    // Compute w.n at quadrature points on facet of cell1
+    T w1n = 0;
     // Get u value at quadrature points on facet, cell1
     const T* u1 = u_n + c1 * ndof;
     T uf1 = 0;
     for (int i = 0; i < ndof; ++i)
-      uf1 += u1[i] * _phi[flocal_1 * ndof * nq + qp1[iq] * ndof + i];
+    {
+      const T* w1 = w + (c1 * ndof + i) * 3;
+      T phi_i = phi[flocal_1 * ndof * nq + qp1[iq] * ndof + i];
+      w1n += w1[0] * phi_i * n[0];
+      w1n += w1[1] * phi_i * n[1];
+      w1n += w1[2] * phi_i * n[2];
+      uf1 += u1[i] * phi_i;
+    }
 
     // Apply upwinding at quadrature points
-    flux[iq] = fmax(w0n, 0) * uf0 + fmin(w1n, 0) * uf1;
+    T flux = fmax(w0n, 0) * uf0 + fmin(w1n, 0) * uf1;
+    for (int i = 0; i < ndof; ++i)
+    {
+      b0val[i] -= phi[flocal_0 * ndof * nq + qp0[iq] * ndof + i] * flux;
+      b1val[i] += phi[flocal_1 * ndof * nq + qp1[iq] * ndof + i] * flux;
+    }
   }
 
   // Locate b cell dofs in output data
   // Integrate at quadrature points (weight = 1/12)
   T* b0 = b + c0 * ndof;
   T* b1 = b + c1 * ndof;
-
   for (int i = 0; i < ndof; ++i)
   {
-    T b0val = 0;
-    T b1val = 0;
-    for (int iq = 0; iq < nq; ++iq)
-    {
-      b0val -= _phi[flocal_0 * ndof * nq + qp0[iq] * ndof + i] * flux[iq];
-      b1val += _phi[flocal_1 * ndof * nq + qp1[iq] * ndof + i] * flux[iq];
-    }
-    b0val /= T(12);
-    b1val /= T(12);
-
-    atomicAdd(&b0[i], b0val);
-    atomicAdd(&b1[i], b1val);
+    b0val[i] /= T(12);
+    b1val[i] /= T(12);
+    atomicAdd(&b0[i], b0val[i]);
+    atomicAdd(&b1[i], b1val[i]);
   }
 }
 
