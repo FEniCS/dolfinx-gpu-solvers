@@ -53,7 +53,7 @@ mesh = Mesh(coord_element)
 # ---------------------------------------------------------------------------
 # Finite element spaces
 # ---------------------------------------------------------------------------
-e   = element("DG", "tetrahedron", 1, shape=(2,))           # scalar DG1
+e   = element("DG", "tetrahedron", 1, shape=(3,))           # scalar DG1
 e_w = element("DG", "tetrahedron", 1, shape=(3,))  # vector DG1 (3 components)
 
 V = FunctionSpace(mesh, e)

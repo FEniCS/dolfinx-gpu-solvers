@@ -271,7 +271,7 @@ void run_dg1_convection(ContainerT& b, ContainerT& u_n, const ContainerT& w,
   // number of components in u_n = 1
 
   // upwind flux - inner(2 * avg(lmbda * w * u_n), jump(v, n)) * dS
-  dg1_convection<T, 2><<<grid_size, block_size>>>(
+  dg1_convection<T, 3><<<grid_size, block_size>>>(
       b.data().get(), u_n.data().get(), w.data().get(), phi.data().get(),
       normals.data().get(), facet_to_cell.data().get(), facets.data().get(),
       facets.size());
@@ -282,7 +282,7 @@ void run_dg1_convection(ContainerT& b, ContainerT& u_n, const ContainerT& w,
 
   // inner(w*u, grad(v))*dx  (volume term, balances the facet flux above)
   grid_size.x = (cells.size() / block_size.x + 1);
-  dg1_uwgradv<T, 2><<<grid_size, block_size>>>(
+  dg1_uwgradv<T, 3><<<grid_size, block_size>>>(
       b.data().get(), u_n.data().get(), w.data().get(), Kadj.data().get(),
       cells.data().get(), cells.size());
 

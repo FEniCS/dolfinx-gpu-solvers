@@ -198,7 +198,7 @@ int main(int argc, char* argv[])
       std::cout << "\n";
     }
 
-    std::size_t nc = 2;
+    std::size_t nc = 3;
 
     auto V
         = std::make_shared<fem::FunctionSpace<U>>(fem::create_functionspace<U>(
@@ -227,8 +227,8 @@ int main(int argc, char* argv[])
             for (std::size_t p = 0; p < np; ++p)
             {
               vals[p + np * c]
-                  = std::sin((2 * c + 1) * std::numbers::pi * x(0, p))
-                    * std::sin((2 * c + 1) * std::numbers::pi * x(1, p));
+                  = std::sin((2 + c) * std::numbers::pi * x(0, p))
+                    * std::sin((2 + c) * std::numbers::pi * x(1, p));
             }
           return {vals, {nc, np}};
         });
