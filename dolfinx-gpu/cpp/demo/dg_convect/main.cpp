@@ -40,7 +40,7 @@
 #include <vector>
 
 using namespace dolfinx;
-using T = float;
+using T = double;
 using U = dolfinx::scalar_value_t<T>;
 
 int main(int argc, char* argv[])
@@ -53,8 +53,8 @@ int main(int argc, char* argv[])
     // Simulation parameters
     // -----------------------------------------------------------------------
     constexpr int n = 50;
-    constexpr double t_end = 1.0;
-    constexpr int num_steps = 500;
+    constexpr double t_end = 8.0;
+    constexpr int num_steps = 4000;
     constexpr double dt = t_end / num_steps;
     constexpr int io_stride = 20; // write output every this many steps
 

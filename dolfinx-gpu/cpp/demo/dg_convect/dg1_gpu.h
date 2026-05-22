@@ -59,10 +59,10 @@
 // @param facets        Interior facet global indices to process.
 // @param n_facets      Length of facets.
 template <typename T, int nc>
-__global__ void dg1_convection(T* b, const T* u_n, const T* w, const T* phi,
-                               const T* normals,
-                               const std::int32_t* facet_to_cell,
-                               const int* facets, int n_facets)
+__launch_bounds__(256) __global__
+    void dg1_convection(T* b, const T* u_n, const T* w, const T* phi,
+                        const T* normals, const std::int32_t* facet_to_cell,
+                        const int* facets, int n_facets)
 {
   // Load a set of facets
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -185,8 +185,9 @@ __global__ void dg1_convection(T* b, const T* u_n, const T* w, const T* phi,
 // @param cells  Cell indices to process.
 // @param n_cells Length of cells.
 template <typename T, int nc>
-__global__ void dg1_uwgradv(T* b, const T* u_n, const T* w, const T* Kadj,
-                            const int* cells, int n_cells)
+__launch_bounds__(256) __global__
+    void dg1_uwgradv(T* b, const T* u_n, const T* w, const T* Kadj,
+                     const int* cells, int n_cells)
 {
   // Load a set of cells
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -265,7 +266,7 @@ void run_dg1_convection(ContainerT& b, ContainerT& u_n, const ContainerT& w,
   dolfinx::common::Timer tsolve("*DG: Compute advection");
 
   // Choose a good block size
-  dim3 block_size(512);
+  dim3 block_size(256);
   dim3 grid_size(facets.size() / block_size.x + 1);
 
   // number of components in u_n = 1
