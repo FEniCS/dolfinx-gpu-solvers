@@ -13,12 +13,18 @@ if(NOT TARGET dolfinx)
   find_package(DOLFINX REQUIRED)
 endif()
 
+if(DEFINED ENV{SCALAR_TYPE})
+  set(SCALAR_TYPE $ENV{SCALAR_TYPE})
+else()
+  set(SCALAR_TYPE float64)
+endif()
+
 # ---------------------------------------------------------------------------
 # Compile UFL form with ffcx
 # ---------------------------------------------------------------------------
 add_custom_command(
   OUTPUT  dg_convect.c
-  COMMAND ffcx --scalar_type=float64 ${CMAKE_CURRENT_SOURCE_DIR}/dg_convect.py
+  COMMAND ffcx --scalar_type=${SCALAR_TYPE} ${CMAKE_CURRENT_SOURCE_DIR}/dg_convect.py
   VERBATIM
   DEPENDS dg_convect.py
   COMMENT "Compiling dg_convect.py with ffcx"
@@ -59,6 +65,8 @@ add_executable(${PROJECT_NAME}
   main.cpp geometry.cpp
   ${CMAKE_CURRENT_BINARY_DIR}/dg_convect.c
 )
+
+target_compile_definitions(${PROJECT_NAME} PUBLIC SCALAR=${SCALAR_TYPE})
 
 target_link_libraries(${PROJECT_NAME} dolfinx ${GPUBLAS})
 
