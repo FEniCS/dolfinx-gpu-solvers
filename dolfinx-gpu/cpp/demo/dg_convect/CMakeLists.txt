@@ -18,7 +18,7 @@ endif()
 # ---------------------------------------------------------------------------
 add_custom_command(
   OUTPUT  dg_convect.c
-  COMMAND ffcx ${CMAKE_CURRENT_SOURCE_DIR}/dg_convect.py
+  COMMAND ffcx --scalar_type=float32 ${CMAKE_CURRENT_SOURCE_DIR}/dg_convect.py
   VERBATIM
   DEPENDS dg_convect.py
   COMMENT "Compiling dg_convect.py with ffcx"

@@ -152,7 +152,12 @@ compute_facet_normals(dolfinx::mesh::Mesh<T>& mesh)
       thrust::device_vector<T>(Kadj.begin(), Kadj.end())};
 }
 
+// Explicit instantiation for double and float
 template std::tuple<thrust::device_vector<double>,
                     thrust::device_vector<double>,
                     thrust::device_vector<double>>
 compute_facet_normals(dolfinx::mesh::Mesh<double>& mesh);
+
+template std::tuple<thrust::device_vector<float>, thrust::device_vector<float>,
+                    thrust::device_vector<float>>
+compute_facet_normals(dolfinx::mesh::Mesh<float>& mesh);
