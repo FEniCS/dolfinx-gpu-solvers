@@ -66,7 +66,7 @@ add_executable(${PROJECT_NAME}
   ${CMAKE_CURRENT_BINARY_DIR}/dg_convect.c
 )
 
-target_compile_definitions(${PROJECT_NAME} PUBLIC SCALAR=${SCALAR_TYPE})
+target_compile_definitions(${PROJECT_NAME} PUBLIC SCALAR_${SCALAR_TYPE})
 
 target_link_libraries(${PROJECT_NAME} dolfinx ${GPUBLAS})
 

@@ -40,7 +40,13 @@
 #include <vector>
 
 using namespace dolfinx;
+
+#if defined(SCALAR_float64)
 using T = double;
+#else
+using T = float;
+#endif
+
 using U = dolfinx::scalar_value_t<T>;
 
 int main(int argc, char* argv[])
