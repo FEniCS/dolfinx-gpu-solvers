@@ -198,10 +198,12 @@ int main(int argc, char* argv[])
       std::cout << "\n";
     }
 
+    std::size_t nc = 2;
+
     auto V
         = std::make_shared<fem::FunctionSpace<U>>(fem::create_functionspace<U>(
             msh, std::make_shared<fem::FiniteElement<U>>(
-                     elem_dg1, std::vector<std::size_t>{2})));
+                     elem_dg1, std::vector<std::size_t>{nc})));
 
     // Vector DG1: same scalar element, value_shape = {3} (3 spatial components)
     auto W
@@ -217,22 +219,18 @@ int main(int argc, char* argv[])
 
     // Initial condition: sin(4 pi x) sin(4 pi y)
     u_n->interpolate(
-        [](auto x) -> std::pair<std::vector<T>, std::vector<std::size_t>>
+        [nc](auto x) -> std::pair<std::vector<T>, std::vector<std::size_t>>
         {
           const std::size_t np = x.extent(1);
-          std::vector<T> vals(2 * np, 0.0);
-          for (std::size_t p = 0; p < np; ++p)
-          {
-            vals[p] = std::sin(4 * std::numbers::pi * x(0, p))
-                      * std::sin(4 * std::numbers::pi * x(1, p));
-            vals[np + p] = std::sin(2 * std::numbers::pi * x(0, p))
-                           * std::sin(2 * std::numbers::pi * x(1, p));
-            //            vals[np * 2 + p] = std::sin(std::numbers::pi * x(0,
-            //            p))
-            //                               * std::sin(std::numbers::pi * x(1,
-            //                               p));
-          }
-          return {vals, {2, np}};
+          std::vector<T> vals(nc * np, 0.0);
+          for (int c = 0; c < nc; ++c)
+            for (std::size_t p = 0; p < np; ++p)
+            {
+              vals[p + np * c]
+                  = std::sin((2 * c + 1) * std::numbers::pi * x(0, p))
+                    * std::sin((2 * c + 1) * std::numbers::pi * x(1, p));
+            }
+          return {vals, {nc, np}};
         });
 
     // Velocity: divergence-free rotation  w = (sin(pi x)cos(pi y),
