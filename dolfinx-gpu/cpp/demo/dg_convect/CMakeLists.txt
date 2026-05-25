@@ -13,12 +13,18 @@ if(NOT TARGET dolfinx)
   find_package(DOLFINX REQUIRED)
 endif()
 
+if(DEFINED ENV{SCALAR_TYPE})
+  set(SCALAR_TYPE $ENV{SCALAR_TYPE})
+else()
+  set(SCALAR_TYPE float64)
+endif()
+
 # ---------------------------------------------------------------------------
 # Compile UFL form with ffcx
 # ---------------------------------------------------------------------------
 add_custom_command(
   OUTPUT  dg_convect.c
-  COMMAND ffcx ${CMAKE_CURRENT_SOURCE_DIR}/dg_convect.py
+  COMMAND ffcx --scalar_type=${SCALAR_TYPE} ${CMAKE_CURRENT_SOURCE_DIR}/dg_convect.py
   VERBATIM
   DEPENDS dg_convect.py
   COMMENT "Compiling dg_convect.py with ffcx"
@@ -34,12 +40,17 @@ if(DEFINED ENV{CUDA_ARCH})
        --extended-lambda --expt-relaxed-constexpr -lineinfo")
   message(STATUS "CUDA architecture: $ENV{CUDA_ARCH}")
   enable_language(CUDA)
+  set(GPUBLAS cublas)
   set_source_files_properties(main.cpp geometry.cpp PROPERTIES LANGUAGE CUDA)
 elseif(DEFINED ENV{HIP_ARCH})
   set(CMAKE_HIP_ARCHITECTURES $ENV{HIP_ARCH})
   set(CMAKE_HIP_STANDARD 20)
+  set(CMAKE_HIP_FLAGS "${CMAKE_HIP_FLAGS} -g -march=native -std=c++20 -O3 -DNDEBUG \
+       -I/opt/cray/pe/mpich/8.1.32/ofi/gnu/12.3/include")
+  set(CMAKE_HIP_FLAGS "${CMAKE_HIP_FLAGS} -fclang-abi-compat=17")
   message(STATUS "HIP architecture: $ENV{HIP_ARCH}")
   enable_language(HIP)
+  set(GPUBLAS hipblas)
   set_source_files_properties(main.cpp geometry.cpp PROPERTIES LANGUAGE HIP)
 else()
   message(STATUS "No GPU back-end selected; building plain C++20")
@@ -55,7 +66,9 @@ add_executable(${PROJECT_NAME}
   ${CMAKE_CURRENT_BINARY_DIR}/dg_convect.c
 )
 
-target_link_libraries(${PROJECT_NAME} dolfinx)
+target_compile_definitions(${PROJECT_NAME} PUBLIC SCALAR_${SCALAR_TYPE})
+
+target_link_libraries(${PROJECT_NAME} dolfinx ${GPUBLAS})
 
 set(CMAKE_CXX_EXTENSIONS OFF)
 target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_20)

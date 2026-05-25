@@ -20,14 +20,9 @@
 /// owning cell and points outward from that cell.
 ///
 /// @param mesh  The tetrahedral mesh (geometry coordinates must be available).
-/// @param dphi  Reference basis-function derivatives at one quadrature point
-///              per facet, laid out as dphi[ref_coord][facet][node] with
-///              strides [num_facets*num_nodes, num_nodes, 1].  For a P1 tet:
-///              num_nodes=4, num_facets=4, total size 48 per cell (but since
-///              the P1 Jacobian is constant the values are facet-independent).
 /// @return      Device vector of length num_facets*3 containing the packed
 ///              (nx, ny, nz) scaled outward normal for each global facet index.
 template <typename T>
-std::pair<thrust::device_vector<T>, thrust::device_vector<T>>
-compute_facet_normals(dolfinx::mesh::Mesh<double>& mesh,
-                      std::span<const T> dphi);
+std::tuple<thrust::device_vector<T>, thrust::device_vector<T>,
+           thrust::device_vector<T>>
+compute_facet_normals(dolfinx::mesh::Mesh<T>& mesh);
