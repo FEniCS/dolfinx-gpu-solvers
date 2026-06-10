@@ -123,6 +123,96 @@ __global__ void geometry_computation_G6(T* G_entity, const T* xgeom,
   }
 }
 
+/// @brief Computes geometry tensor K from the coordinates and quadrature
+/// weights.
+/// @param [out] K_entity geometry data [n_entities, nq, 9]
+/// @param [in] xgeom Geometry points [*, 3]
+/// @param [in] geometry_dofmap Location of coordinates for each cell in
+/// xgeom [*, ncdofs]
+/// @param [in] dphi Basis derivative tabulation for cell at quadrature
+/// points [3, nq, ncdofs]
+/// @param [in] weights Quadrature weights [nq]
+/// @param [in] entities list of cells to compute for [n_entities]
+/// @param [in] n_entities total number of cells to compute for
+/// @param [in] nq number of quadrature points per cell
+/// @tparam T scalar type
+template <typename T>
+__global__ void geometry_computation_K9(T* K_entity, const T* xgeom,
+                                        const std::int32_t* geometry_dofmap,
+                                        const T* dphi, const T* weights,
+                                        const int* entities, int n_entities,
+                                        int nq, int ncdofs)
+{
+  // One block per cell
+  int c = blockIdx.x;
+
+  // Limit to cells in list
+  if (c >= n_entities)
+    return;
+
+  // Cell index
+  int cell = entities[c];
+
+  // Geometric dimension
+  constexpr int gdim = 3;
+
+  extern __shared__ T _coord_dofs[];
+
+  // First collect geometry into shared memory
+  int iq = threadIdx.x;
+  if (iq >= nq)
+    return;
+
+  if (nq < ncdofs)
+  {
+    if (iq == 0)
+      for (int i = 0; i < ncdofs; ++i)
+        for (int j = 0; j < gdim; ++j)
+          _coord_dofs[i * gdim + j]
+              = xgeom[3 * geometry_dofmap[cell * ncdofs + i] + j];
+  }
+  else if (iq < ncdofs)
+  {
+    for (int j = 0; j < 3; ++j)
+      _coord_dofs[iq * 3 + j]
+          = xgeom[3 * geometry_dofmap[cell * ncdofs + iq] + j];
+  }
+  __syncthreads();
+
+  // One quadrature point per thread
+
+  // Jacobian
+  T J[3][3];
+  auto coord_dofs
+      = [](int i, int j) -> T& { return _coord_dofs[i * gdim + j]; };
+
+  // For each quadrature point / thread
+
+  // dphi has shape [gdim, ncdofs]
+  auto _dphi = [&dphi, nq, ncdofs, iq](int i, int j) -> const T
+  { return dphi[((i + 1) * nq + iq) * ncdofs + j]; };
+  for (std::size_t i = 0; i < gdim; i++)
+  {
+    for (std::size_t j = 0; j < gdim; j++)
+    {
+      J[i][j] = 0.0;
+      for (std::size_t k = 0; k < ncdofs; k++)
+        J[i][j] += coord_dofs(k, i) * _dphi(j, k);
+    }
+  }
+  // Components of K = J^-1 (detJ)
+  std::int64_t offset = static_cast<std::int64_t>(c) * nq * 9 + iq;
+  K_entity[offset] = J[1][1] * J[2][2] - J[1][2] * J[2][1];
+  K_entity[offset + nq] = -J[0][1] * J[2][2] + J[0][2] * J[2][1];
+  K_entity[offset + 2 * nq] = J[0][1] * J[1][2] - J[0][2] * J[1][1];
+  K_entity[offset + 3 * nq] = -J[1][0] * J[2][2] + J[1][2] * J[2][0];
+  K_entity[offset + 4 * nq] = J[0][0] * J[2][2] - J[0][2] * J[2][0];
+  K_entity[offset + 5 * nq] = -J[0][0] * J[1][2] + J[0][2] * J[1][0];
+  K_entity[offset + 6 * nq] = J[1][0] * J[2][1] - J[1][1] * J[2][0];
+  K_entity[offset + 7 * nq] = -J[0][0] * J[2][1] + J[0][1] * J[2][0];
+  K_entity[offset + 8 * nq] = J[0][0] * J[1][1] - J[0][1] * J[1][0];
+}
+
 //-----------------------------------------------------------------------------
 template <typename T>
 __global__ void geometry_computation_detJ(T* G_entity, const T* xgeom,
@@ -228,6 +318,11 @@ public:
   /// @param[in] cells List of cells to compute on
   void compute_G6(ContainerT& G6_q, const ContainerI& cells) const;
 
+  /// Compute the 9 entries of K=adj(J)
+  /// @param[out] K9_q Values at quadrature points
+  /// @param[in] cells List of cells to compute on
+  void compute_K9(ContainerT& K_q, const ContainerI& cells) const;
+
   /// Compute the determinant of the geometry jacobian at quadrature points
   /// @param[out] detJ_q Determinant of the Jacobian at quadrature points
   /// @param[in] cells List of cells to compute on
@@ -326,6 +421,20 @@ void GPUGeometry<ContainerT, ContainerI>::compute_detJ(
   std::size_t shm_size = 3 * ncdofs * sizeof(T);
   detail::geometry_computation_detJ<T><<<grid_size_g, block_size_g, shm_size>>>(
       detJ_q.data().get(), geom_x.data().get(), geom_dofmap.data().get(),
+      phi_data.data().get(), weights.data().get(), cells.data().get(),
+      cells.size(), nq, ncdofs);
+}
+//--------------------------------------------------------------------------
+template <FPholder ContainerT, typename ContainerI>
+void GPUGeometry<ContainerT, ContainerI>::compute_K9(
+    ContainerT& K_q, const ContainerI& cells) const
+{
+  using T = ContainerT::value_type;
+  dim3 block_size_g(nq);
+  dim3 grid_size_g(cells.size());
+  std::size_t shm_size = 3 * ncdofs * sizeof(T);
+  detail::geometry_computation_K9<T><<<grid_size_g, block_size_g, shm_size>>>(
+      K_q.data().get(), geom_x.data().get(), geom_dofmap.data().get(),
       phi_data.data().get(), weights.data().get(), cells.data().get(),
       cells.size(), nq, ncdofs);
 }
