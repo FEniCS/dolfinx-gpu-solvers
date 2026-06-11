@@ -362,15 +362,15 @@ GPUGeometry<ContainerT, ContainerI>::GPUGeometry(
     int qdegree)
 {
   // Coordinate Element
-  auto element = geometry.cmap();
+  auto element = geometry.cmaps().front();
 
   // Copy geometry data to device
   geom_x.assign(geometry.x().data(), geometry.x().data() + geometry.x().size());
-  geom_dofmap.assign(geometry.dofmap().data_handle(),
-                     geometry.dofmap().data_handle()
-                         + geometry.dofmap().size());
+  geom_dofmap.assign(geometry.dofmaps().front().data_handle(),
+                     geometry.dofmaps().front().data_handle()
+                         + geometry.dofmaps().front().size());
 
-  ncdofs = geometry.dofmap().extent(1);
+  ncdofs = geometry.dofmaps().front().extent(1);
 
   // Set up quadrature weights and basis functions
   basix::cell::type cell_type = cell_type_to_basix_type(element.cell_shape());

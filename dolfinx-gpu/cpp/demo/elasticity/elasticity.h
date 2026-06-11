@@ -199,8 +199,11 @@ void assemble_elasticity_action(dolfinx::la::Vector<T, ContainerT>& b,
   dim3 block_size(ndofs, 3, 2);
   dim3 grid_size(cells.size() / 2 + 1);
 
+  T lambda = 1.0;
+  T mu = 1.0;
+
   detail::elasticity_action<T, nq, ndofs, 2><<<grid_size, block_size>>>(
       b.array().data().get(), u.array().data().get(), phi_data.data().get(),
       K.data().get(), wdetJ.data().get(), cell_dofs.data().get(),
-      cells.data().get(), cells.size());
+      cells.data().get(), cells.size(), lambda, mu);
 }
