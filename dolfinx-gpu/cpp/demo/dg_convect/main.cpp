@@ -56,7 +56,7 @@ int main(int argc, char* argv[])
     // -----------------------------------------------------------------------
     // Mesh: box of tets, shared-facet ghost mode (needed for dS)
     // -----------------------------------------------------------------------
-    auto part = mesh::create_cell_partitioner(mesh::GhostMode::shared_facet);
+    auto part = mesh::create_cell_partitioner(mesh::GhostMode::shared_facet, 2);
     auto msh = std::make_shared<mesh::Mesh<U>>(mesh::create_box<U>(
         MPI_COMM_WORLD, {{{0.0, 0.0, 0.0}, {1.0, 1.0, 0.1}}}, {n, n, n / 10},
         mesh::CellType::tetrahedron, part));
@@ -68,7 +68,7 @@ int main(int argc, char* argv[])
     msh->topology_mutable()->create_connectivity(tdim, tdim - 1);
 
     // Tabulate basis function derivatives at facet midpoints
-    auto element = msh->geometry().cmap();
+    auto element = msh->geometry().cmaps().front();
     std::size_t nq = 4;
     std::vector<T> qpoints = {0,     1 / 3, 1 / 3, 1 / 3, 0,     1 / 3,
                               1 / 3, 1 / 3, 0,     1 / 3, 1 / 3, 1 / 3};
