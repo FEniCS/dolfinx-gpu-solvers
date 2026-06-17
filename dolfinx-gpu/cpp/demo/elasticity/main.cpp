@@ -113,6 +113,22 @@ int main(int argc, char* argv[])
     // Functions
     // -----------------------------------------------------------------------
     auto u = std::make_shared<fem::Function<T>>(V);
+    auto b = std::make_shared<fem::Function<T>>(V);
+
+    u->interpolate(
+        [](auto x) -> std::pair<std::vector<T>, std::vector<std::size_t>>
+        {
+          const std::size_t np = x.extent(1);
+          std::vector<T> vals(3 * np, 0.0);
+          for (std::size_t p = 0; p < np; ++p)
+          {
+            vals[p] = std::sin(std::numbers::pi * x(0, p))
+                      * std::cos(std::numbers::pi * x(1, p));
+            vals[np + p] = -std::cos(std::numbers::pi * x(0, p))
+                           * std::sin(std::numbers::pi * x(1, p));
+          }
+          return {vals, {3, np}};
+        });
 
     // Copy u to device
     la::Vector<T, thrust::device_vector<T>> u_device(*(u->x()));
@@ -120,11 +136,30 @@ int main(int argc, char* argv[])
 
     // TODO: interpolate something into u
 
-    // TODO: fill in phi from basix
-    thrust::device_vector<T> phi_data;
+    // Tabulate basis for element
+    std::size_t nq = g_device.qpoints().size() / 3;
+    auto shape = elem_p2.tabulate_shape(1, nq);
+    std::vector<T> table(
+        std::accumulate(shape.begin(), shape.end(), 1, std::multiplies<int>()));
+    std::vector<T> qpoints(g_device.qpoints().size());
+    thrust::copy(g_device.qpoints().begin(), g_device.qpoints().end(),
+                 qpoints.begin());
+    elem_p2.tabulate(1, std::span(qpoints), {nq, 3}, std::span(table));
+    assert(shape.size() == 4);
+    assert(shape[0] == 4);
+    assert(shape[1] == nq);
+    int ndofs = shape[2];
+    assert(shape[3] == 1);
+    thrust::device_vector<T> phi_data(table.begin(), table.end());
 
     assemble_elasticity_action(b_device, u_device, phi_data, K, wdetJ,
                                gpu_dofmap.map(), cell_list);
+
+    thrust::copy(b_device.array().begin(), b_device.array().end(),
+                 b->x()->array().begin());
+
+    for (auto q : b->x()->array())
+      std::cout << q << "\n";
 
     dolfinx::list_timings(MPI_COMM_WORLD);
   }
