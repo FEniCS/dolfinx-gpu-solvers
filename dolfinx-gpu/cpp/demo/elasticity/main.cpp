@@ -69,7 +69,7 @@ int main(int argc, char* argv[])
   dolfinx::init_logging(argc, argv);
 
   {
-    int n = 2;
+    int n = 1;
     auto part
         = mesh::create_cell_partitioner(dolfinx::mesh::GhostMode::none, 2);
     auto mesh = std::make_shared<mesh::Mesh<U>>(mesh::create_box<U>(
@@ -78,15 +78,16 @@ int main(int argc, char* argv[])
 
     // Create list of all cells
     int tdim = mesh->topology()->dim();
-    std::vector<std::int32_t> cell_list_0(
-        mesh->topology()->index_map(mesh->topology()->dim())->size_local());
-    std::iota(cell_list_0.begin(), cell_list_0.end(), 0);
+    std::vector<std::int32_t> cell_list_0 = {0};
+    // (
+    //     mesh->topology()->index_map(mesh->topology()->dim())->size_local());
+    // std::iota(cell_list_0.begin(), cell_list_0.end(), 0);
     thrust::device_vector<std::int32_t> cell_list(cell_list_0.begin(),
                                                   cell_list_0.end());
 
     // Set degree 4 to get 14 quadrature points
     GPUGeometry<thrust::device_vector<U>, thrust::device_vector<std::int32_t>>
-        g_device(mesh->geometry(), 4);
+        g_device(mesh->geometry(), 2);
     thrust::device_vector<T> K(cell_list.size() * 9
                                * g_device.qpoints().size());
     g_device.compute_K9(K, cell_list);
@@ -109,6 +110,17 @@ int main(int argc, char* argv[])
                       elem_p2, std::vector<std::size_t>{3})));
     GPUDofMap<thrust::device_vector<std::int32_t>> gpu_dofmap(*(V->dofmap()));
 
+    const auto& dofmap = *V->dofmap();
+    const auto map = dofmap.map();
+
+    std::cout << "dofmap:\n";
+    for (std::size_t c = 0; c < map.extent(0); ++c)
+      {
+        for (std::size_t j = 0; j < map.extent(1); ++j)
+          std::cout << " " << map(c, j);
+        std::cout << "\n";
+      }
+
     // -----------------------------------------------------------------------
     // Functions
     // -----------------------------------------------------------------------
@@ -129,6 +141,11 @@ int main(int argc, char* argv[])
           }
           return {vals, {3, np}};
         });
+
+    std::cout << "u = ";
+    for (auto q : u->x()->array())
+      std::cout << (std::abs(q) < 1e-14 ? 0 : q) << " ";
+    std::cout << "\n";
 
     // Copy u to device
     la::Vector<T, thrust::device_vector<T>> u_device(*(u->x()));
