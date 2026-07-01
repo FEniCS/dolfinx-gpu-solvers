@@ -88,12 +88,14 @@ int main(int argc, char* argv[])
     // Set degree 4 to get 14 quadrature points
     GPUGeometry<thrust::device_vector<U>, thrust::device_vector<std::int32_t>>
         g_device(mesh->geometry(), 2);
-    thrust::device_vector<T> K(cell_list.size() * 9
-                               * g_device.qpoints().size());
-    g_device.compute_K9(K, cell_list);
+    // detJ must be computed first: compute_K9 reuses it (via wdetJ) to
+    // normalize K = J^{-T} instead of re-deriving detJ itself.
     thrust::device_vector<T> wdetJ(cell_list.size()
                                    * g_device.qpoints().size());
     g_device.compute_detJ(wdetJ, cell_list);
+    thrust::device_vector<T> K(cell_list.size() * 9
+                               * g_device.qpoints().size());
+    g_device.compute_K9(K, wdetJ, cell_list);
 
     // -----------------------------------------------------------------------
     // Finite element space

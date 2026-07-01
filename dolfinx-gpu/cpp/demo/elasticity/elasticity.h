@@ -181,7 +181,7 @@ __global__ void elasticity_action(T* __restrict__ b, const T* __restrict__ u,
 
 /// @brief Assemble 3D elasticity action vector
 /// @param phi_data Basis evaluation data at reference quadrature points
-/// @param K=adj(J) Geometry transform at each quadrature point
+/// @param K=J^{-T} Geometry transform at each quadrature point
 /// @param wdetJ Weighted geometry detJ at each quadrature point
 /// @param cell_dofs DofMap
 /// @param cells List of cells to integrate over
