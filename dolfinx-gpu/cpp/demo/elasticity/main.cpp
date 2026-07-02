@@ -69,7 +69,7 @@ int main(int argc, char* argv[])
   dolfinx::init_logging(argc, argv);
 
   {
-    int n = 1;
+    int n = 100;
     auto part
         = mesh::create_cell_partitioner(dolfinx::mesh::GhostMode::none, 2);
     auto mesh = std::make_shared<mesh::Mesh<U>>(mesh::create_box<U>(
@@ -78,10 +78,9 @@ int main(int argc, char* argv[])
 
     // Create list of all cells
     int tdim = mesh->topology()->dim();
-    std::vector<std::int32_t> cell_list_0 = {0};
-    // (
-    //     mesh->topology()->index_map(mesh->topology()->dim())->size_local());
-    // std::iota(cell_list_0.begin(), cell_list_0.end(), 0);
+    std::vector<std::int32_t> cell_list_0(
+        mesh->topology()->index_map(mesh->topology()->dim())->size_local());
+    std::iota(cell_list_0.begin(), cell_list_0.end(), 0);
     thrust::device_vector<std::int32_t> cell_list(cell_list_0.begin(),
                                                   cell_list_0.end());
 
@@ -115,14 +114,6 @@ int main(int argc, char* argv[])
     const auto& dofmap = *V->dofmap();
     const auto map = dofmap.map();
 
-    std::cout << "dofmap:\n";
-    for (std::size_t c = 0; c < map.extent(0); ++c)
-      {
-        for (std::size_t j = 0; j < map.extent(1); ++j)
-          std::cout << " " << map(c, j);
-        std::cout << "\n";
-      }
-
     // -----------------------------------------------------------------------
     // Functions
     // -----------------------------------------------------------------------
@@ -143,11 +134,6 @@ int main(int argc, char* argv[])
           }
           return {vals, {3, np}};
         });
-
-    std::cout << "u = ";
-    for (auto q : u->x()->array())
-      std::cout << (std::abs(q) < 1e-14 ? 0 : q) << " ";
-    std::cout << "\n";
 
     // Copy u to device
     la::Vector<T, thrust::device_vector<T>> u_device(*(u->x()));
@@ -171,14 +157,23 @@ int main(int argc, char* argv[])
     assert(shape[3] == 1);
     thrust::device_vector<T> phi_data(table.begin(), table.end());
 
+    auto start = std::chrono::high_resolution_clock::now();
+
     assemble_elasticity_action(b_device, u_device, phi_data, K, wdetJ,
                                gpu_dofmap.map(), cell_list);
+
+    cudaDeviceSynchronize();
+
+    auto stop = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> duration = stop - start;
+    double time = duration.count();
+    double number_of_dofs = static_cast<double>(u_device.array().size());
+    std::cout << "Computation rate = " << number_of_dofs / time << " dofs/s\n";
 
     thrust::copy(b_device.array().begin(), b_device.array().end(),
                  b->x()->array().begin());
 
-    for (auto q : b->x()->array())
-      std::cout << q << "\n";
+    std::cout << dolfinx::la::norm(*b->x()) << "\n";
 
     dolfinx::list_timings(MPI_COMM_WORLD);
   }
