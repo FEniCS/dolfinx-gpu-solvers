@@ -22,8 +22,6 @@ gmsh.write("circle.msh")
 
 q = gmshio.model_to_mesh(gmsh.model, MPI.COMM_WORLD, 0, gdim=2)
 
-print(q.mesh.geometry.x[:,1].max())
-
 xdmf = XDMFFile(MPI.COMM_WORLD, "circle.xdmf", "w")
 xdmf.write_mesh(q.mesh)
 
