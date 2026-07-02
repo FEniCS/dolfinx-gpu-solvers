@@ -12,6 +12,7 @@
 
 #include "../../include/gpu_geometry.h"
 #include "elasticity.h"
+#include "util.h"
 
 using namespace dolfinx;
 using T = double;
@@ -162,7 +163,7 @@ int main(int argc, char* argv[])
     assemble_elasticity_action(b_device, u_device, phi_data, K, wdetJ,
                                gpu_dofmap.map(), cell_list);
 
-    cudaDeviceSynchronize();
+    device_synchronize();
 
     auto stop = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> duration = stop - start;
