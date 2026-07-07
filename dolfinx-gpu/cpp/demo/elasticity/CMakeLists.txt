@@ -12,6 +12,7 @@ project(${PROJECT_NAME} LANGUAGES C CXX)
 if(NOT TARGET dolfinx)
   find_package(DOLFINX REQUIRED)
 endif()
+find_package(Boost 1.70 REQUIRED program_options)
 
 if(DEFINED ENV{CUDA_ARCH})
   set(CMAKE_CUDA_ARCHITECTURES $ENV{CUDA_ARCH})
@@ -40,7 +41,7 @@ add_executable(${PROJECT_NAME}
   main.cpp
 )
 
-target_link_libraries(${PROJECT_NAME} dolfinx)
+target_link_libraries(${PROJECT_NAME} dolfinx Boost::program_options)
 
 set(CMAKE_CXX_EXTENSIONS OFF)
 target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_20)

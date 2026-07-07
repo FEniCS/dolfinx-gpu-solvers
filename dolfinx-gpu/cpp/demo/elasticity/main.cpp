@@ -6,6 +6,7 @@
 //
 
 #include <basix/finite-element.h>
+#include <boost/program_options.hpp>
 #include <dolfinx.h>
 #include <dolfinx/la/Vector.h>
 #include <thrust/device_vector.h>
@@ -15,6 +16,7 @@
 #include "util.h"
 
 using namespace dolfinx;
+namespace po = boost::program_options;
 using T = double;
 using U = dolfinx::scalar_value_t<T>;
 
@@ -69,8 +71,21 @@ int main(int argc, char* argv[])
   MPI_Init(&argc, &argv);
   dolfinx::init_logging(argc, argv);
 
+  po::options_description desc("Options");
+  desc.add_options()("help,h", "Print usage message")(
+      "n", po::value<std::size_t>()->default_value(100), "Cube mesh size");
+
+  // Parse command line options
+  po::variables_map vm;
+  po::store(po::command_line_parser(argc, argv)
+                .options(desc)
+                .allow_unregistered()
+                .run(),
+            vm);
+
   {
-    int n = 100;
+    std::int32_t n = vm["n"].as<std::size_t>();
+    std::cout << "n=" << n << "\n";
     auto part
         = mesh::create_cell_partitioner(dolfinx::mesh::GhostMode::none, 2);
     auto mesh = std::make_shared<mesh::Mesh<U>>(mesh::create_box<U>(
@@ -158,18 +173,23 @@ int main(int argc, char* argv[])
     assert(shape[3] == 1);
     thrust::device_vector<T> phi_data(table.begin(), table.end());
 
+    int nrep = 10;
     auto start = std::chrono::high_resolution_clock::now();
 
-    assemble_elasticity_action(b_device, u_device, phi_data, K, wdetJ,
-                               gpu_dofmap.map(), cell_list);
-
-    device_synchronize();
+    for (int rep = 0; rep < nrep; ++rep)
+    {
+      assemble_elasticity_action(b_device, u_device, phi_data, K, wdetJ,
+                                 gpu_dofmap.map(), cell_list);
+      device_synchronize();
+    }
 
     auto stop = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> duration = stop - start;
     double time = duration.count();
     double number_of_dofs = static_cast<double>(u_device.array().size());
-    std::cout << "Computation rate = " << number_of_dofs / time << " dofs/s\n";
+    std::cout << "Computation rate = " << (nrep * number_of_dofs / (1e9 * time))
+              << " Gdofs/s\n";
+    std::cout << "Number of dofs = " << number_of_dofs << "\n";
 
     thrust::copy(b_device.array().begin(), b_device.array().end(),
                  b->x()->array().begin());

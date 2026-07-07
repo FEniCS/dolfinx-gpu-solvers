@@ -50,8 +50,8 @@ __global__ void elasticity_action(T* __restrict__ b, const T* __restrict__ u,
                                   const std::int32_t* __restrict__ cells,
                                   int ncells, T lambda, T mu)
 {
-  const int tz = threadIdx.z; // 0..cells_per_block-1 (cell within block)
-  const int tx = threadIdx.x; // 0..ndofs-1           (node index)
+  const int tz = threadIdx.x; // 0..cells_per_block-1 (cell within block)
+  const int tx = threadIdx.z; // 0..ndofs-1           (node index)
   const int ty = threadIdx.y; // 0..2                 (component)
 
   // All threads must reach the __syncthreads() barriers below, so inactive
@@ -196,7 +196,7 @@ void assemble_elasticity_action(dolfinx::la::Vector<T, ContainerT>& b,
   constexpr int ndofs = 10;
   constexpr int nq = 4;
 
-  dim3 block_size(ndofs, 3, 2);
+  dim3 block_size(2, 3, ndofs);
   dim3 grid_size(cells.size() / 2 + 1);
 
   T lambda = 1.0;
