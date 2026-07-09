@@ -15,10 +15,16 @@
 #include "elasticity.h"
 #include "util.h"
 
+#include <fstream>
+#include <iomanip>
+
 using namespace dolfinx;
 namespace po = boost::program_options;
-using T = double;
+using T = float;
 using U = dolfinx::scalar_value_t<T>;
+
+constexpr int polynomial_order = 2;
+constexpr int quadrature_degree = 2 * (polynomial_order - 1);
 
 template <typename ContainerI>
 class GPUDofMap
@@ -102,7 +108,7 @@ int main(int argc, char* argv[])
 
     // Set degree 4 to get 14 quadrature points
     GPUGeometry<thrust::device_vector<U>, thrust::device_vector<std::int32_t>>
-        g_device(mesh->geometry(), 2);
+        g_device(mesh->geometry(), quadrature_degree);
     // detJ must be computed first: compute_K9 reuses it (via wdetJ) to
     // normalize K = J^{-T} instead of re-deriving detJ itself.
     thrust::device_vector<T> wdetJ(cell_list.size()
@@ -116,8 +122,8 @@ int main(int argc, char* argv[])
     // Finite element space
     // -----------------------------------------------------------------------
     auto elem_p2 = basix::create_element<U>(
-        basix::element::family::P, basix::cell::type::tetrahedron, 2,
-        basix::element::lagrange_variant::unset,
+        basix::element::family::P, basix::cell::type::tetrahedron, polynomial_order,
+        basix::element::lagrange_variant::equispaced,
         basix::element::dpc_variant::unset,
         /* discontinuous = */ false);
 
@@ -159,6 +165,7 @@ int main(int argc, char* argv[])
 
     // Tabulate basis for element
     std::size_t nq = g_device.qpoints().size() / 3;
+    std::cout << "runtime nq = " << nq << "\n";
     auto shape = elem_p2.tabulate_shape(1, nq);
     std::vector<T> table(
         std::accumulate(shape.begin(), shape.end(), 1, std::multiplies<int>()));
@@ -176,27 +183,68 @@ int main(int argc, char* argv[])
     int nrep = 10;
     auto start = std::chrono::high_resolution_clock::now();
 
+    thrust::fill(b_device.array().begin(), b_device.array().end(), T(0));
+    device_synchronize();
+
     for (int rep = 0; rep < nrep; ++rep)
     {
-      assemble_elasticity_action(b_device, u_device, phi_data, K, wdetJ,
-                                 gpu_dofmap.map(), cell_list);
-      device_synchronize();
+      assemble_elasticity_action<polynomial_order>(b_device, u_device, phi_data, K, wdetJ,
+                                    gpu_dofmap.map(), cell_list);
     }
+
+    device_synchronize();
 
     auto stop = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> duration = stop - start;
     double time = duration.count();
     double number_of_dofs = static_cast<double>(u_device.array().size());
-    std::cout << "Computation rate = " << (nrep * number_of_dofs / (1e9 * time))
-              << " Gdofs/s\n";
+    double computation_rate = nrep * number_of_dofs / (1e9 * time);
+    
+    std::cout << "Computation rate = " << computation_rate << " Gdofs/s\n";
     std::cout << "Number of dofs = " << number_of_dofs << "\n";
+
+    // save result to CSV file
+    const std::string filename = "elasticity_rate_vs_n.csv";
+
+    std::ifstream check_file(filename);
+    bool write_header = !check_file.good();
+    check_file.close();
+
+    std::ofstream csv(filename, std::ios::app);
+
+    if (write_header)
+    {
+      csv << "n,number_of_dofs,time_s,nrep,computation_rate_Gdofs_s\n";
+    }
+
+    csv << n << "," << number_of_dofs << "," << time << "," << nrep << "," << computation_rate << "\n";
 
     thrust::copy(b_device.array().begin(), b_device.array().end(),
                  b->x()->array().begin());
 
-    std::cout << dolfinx::la::norm(*b->x()) << "\n";
-
     dolfinx::list_timings(MPI_COMM_WORLD);
+
+    // Correctness check: run once only
+    thrust::fill(b_device.array().begin(), b_device.array().end(), T(0));
+    device_synchronize();
+
+    assemble_elasticity_action<polynomial_order>(
+        b_device, u_device, phi_data, K, wdetJ,
+        gpu_dofmap.map(), cell_list);
+
+    device_synchronize();
+
+    thrust::copy(b_device.array().begin(), b_device.array().end(),
+                b->x()->array().begin());
+
+    std::cout << "b norm = " << std::setprecision(17) << dolfinx::la::norm(*b->x()) << "\n";
+
+    // const auto& b_array = b->x()->array();
+
+    // for (std::size_t i = 0; i < b_array.size(); ++i)
+    // {
+    //   std::cout << "b[" << i << "] = " << b_array[i] << "\n";
+    // }
   }
 
   MPI_Finalize();

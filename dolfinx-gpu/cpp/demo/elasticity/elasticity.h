@@ -12,11 +12,11 @@ namespace detail
 {
 /// @brief Assemble action of elasticity operator (matrix-free)
 ///
-/// Launch with blockDim = (ndofs, 3, cells_per_block), gridDim.x =
+/// Launch with blockDim = (cells_per_block, 3, ndofs), gridDim.x =
 /// ceil(ncells / cells_per_block).
 /// Thread utilisation per phase:
 ///   - Load:     30*cells_per_block threads
-///   - Gradient+stress: nq*cells_per_block threads (q = ty*ndofs + tx < nq;
+///   - Gradient+stress: nq*cells_per_block threads (q = ty*ndofs + tz < nq;
 ///     requires nq <= 3*ndofs)
 ///   - Scatter:  30*cells_per_block threads, no intra-block atomics
 ///
@@ -41,7 +41,9 @@ namespace detail
 /// @tparam ndofs           Number of scalar dofs per cell (e.g. 10 for P2 tet)
 /// @tparam cells_per_block Number of cells processed per CUDA block; increase
 ///                         to raise occupancy (2 gives 2 warps per block)
+
 template <typename T, int nq, int ndofs, int cells_per_block>
+
 __global__ void elasticity_action(T* __restrict__ b, const T* __restrict__ u,
                                   const T* __restrict__ phi_data,
                                   const T* __restrict__ K_entity,
@@ -50,30 +52,36 @@ __global__ void elasticity_action(T* __restrict__ b, const T* __restrict__ u,
                                   const std::int32_t* __restrict__ cells,
                                   int ncells, T lambda, T mu)
 {
-  const int tz = threadIdx.x; // 0..cells_per_block-1 (cell within block)
-  const int tx = threadIdx.z; // 0..ndofs-1           (node index)
+  const int tx = threadIdx.x; // 0..cells_per_block-1 (cell within block)
+  const int tz = threadIdx.z; // 0..ndofs-1           (node index)
   const int ty = threadIdx.y; // 0..2                 (component)
 
   // All threads must reach the __syncthreads() barriers below, so inactive
   // threads (cell_idx >= ncells in the last block) may not return early.
   // They use cell 0 as a placeholder for pointer arithmetic only; every
   // global/shared memory access is guarded by `active`.
-  const int cell_idx = blockIdx.x * cells_per_block + tz;
+  const int cell_idx = blockIdx.x * cells_per_block + tx;
   const bool active = cell_idx < ncells;
-  const std::size_t cell_id
-      = active ? static_cast<std::size_t>(cells[cell_idx]) : 0;
+  const std::size_t cell_id = active ? static_cast<std::size_t>(cells[cell_idx]) : 0;
 
   // Shared memory: one scratch and wF slot per cell in the block
-  __shared__ T
-      scratch[cells_per_block][3 * ndofs]; // interleaved: [node*3 + component]
-  __shared__ T wF[cells_per_block][nq][3][3]; // weighted flux tensor
+  __shared__ T scratch[3 * ndofs][cells_per_block]; // interleaved: [node*3 + component]
+  __shared__ T wF[nq][3][3][cells_per_block]; // weighted flux tensor
+  __shared__ std::int32_t nodes[ndofs][cells_per_block]; // node indices for each cell
 
   // --- Load dofs (all threads) ---
-  if (active and tx < ndofs)
+  if (active and ty ==0 and tz < ndofs) // global node number the same for all components so only one component loads the node indices
   {
-    const std::int32_t dof = cell_dofs[cell_id * ndofs + tx] * 3 + ty;
-    scratch[tz][tx * 3 + ty] = u[dof];
+    nodes[tz][tx] = cell_dofs[cell_id * ndofs + tz];
   }
+  __syncthreads();
+
+  if (active and tz < ndofs)
+  {
+    const std::int32_t dof = nodes[tz][tx] * 3 + ty;
+    scratch[tz * 3 + ty][tx] = u[dof];
+  }
+
   __syncthreads();
 
   // Basis derivative arrays (phi values at offset 0 not needed)
@@ -86,7 +94,7 @@ __global__ void elasticity_action(T* __restrict__ b, const T* __restrict__ u,
   const T* wdetJ = wdetJ_entity + cell_id * nq;
 
   // --- Gradient + stress + out-transform (nq * cells_per_block threads) ---
-  const int q = ty * ndofs + tx;
+  const int q = ty * ndofs + tz;
   if (active and q < nq)
   {
     // K = J^{-T}, stored component-major: K[k * nq + q]
@@ -95,7 +103,7 @@ __global__ void elasticity_action(T* __restrict__ b, const T* __restrict__ u,
     const T K6 = K[6 * nq + q], K7 = K[7 * nq + q], K8 = K[8 * nq + q];
     const T wJ = wdetJ[q];
 
-    // Reference gradients: d(u_c)/d(xi_m) = sum_i scratch[tz][i*3+c] *
+    // Reference gradients: d(u_c)/d(xi_m) = sum_i scratch[i*3+c][tx] *
     // dphi_m[q*ndofs+i]
     T dux_xi = T(0), dux_eta = T(0), dux_zeta = T(0);
     T duy_xi = T(0), duy_eta = T(0), duy_zeta = T(0);
@@ -106,9 +114,9 @@ __global__ void elasticity_action(T* __restrict__ b, const T* __restrict__ u,
       const T bxi = dphix[q * ndofs + i];
       const T beta = dphiy[q * ndofs + i];
       const T bzeta = dphiz[q * ndofs + i];
-      const T ux = scratch[tz][i * 3 + 0];
-      const T uy = scratch[tz][i * 3 + 1];
-      const T uz = scratch[tz][i * 3 + 2];
+      const T ux = scratch[i * 3 + 0][tx];
+      const T uy = scratch[i * 3 + 1][tx];
+      const T uz = scratch[i * 3 + 2][tx];
 
       dux_xi += ux * bxi;
       dux_eta += ux * beta;
@@ -144,38 +152,55 @@ __global__ void elasticity_action(T* __restrict__ b, const T* __restrict__ u,
     const T sig_xz = mu * (dux_dz + duz_dx);
     const T sig_yz = mu * (duy_dz + duz_dy);
 
-    // Out-transform: wF[tz][q][i][m] = wJ * sum_j sigma_{ij} * K_{jm}
-    wF[tz][q][0][0] = wJ * (sig_xx * K0 + sig_xy * K3 + sig_xz * K6);
-    wF[tz][q][0][1] = wJ * (sig_xx * K1 + sig_xy * K4 + sig_xz * K7);
-    wF[tz][q][0][2] = wJ * (sig_xx * K2 + sig_xy * K5 + sig_xz * K8);
-    wF[tz][q][1][0] = wJ * (sig_xy * K0 + sig_yy * K3 + sig_yz * K6);
-    wF[tz][q][1][1] = wJ * (sig_xy * K1 + sig_yy * K4 + sig_yz * K7);
-    wF[tz][q][1][2] = wJ * (sig_xy * K2 + sig_yy * K5 + sig_yz * K8);
-    wF[tz][q][2][0] = wJ * (sig_xz * K0 + sig_yz * K3 + sig_zz * K6);
-    wF[tz][q][2][1] = wJ * (sig_xz * K1 + sig_yz * K4 + sig_zz * K7);
-    wF[tz][q][2][2] = wJ * (sig_xz * K2 + sig_yz * K5 + sig_zz * K8);
+    // Out-transform: wF[tx][q][i][m] = wJ * sum_j sigma_{ij} * K_{jm}
+    wF[q][0][0][tx] = wJ * (sig_xx * K0 + sig_xy * K3 + sig_xz * K6);
+    wF[q][0][1][tx] = wJ * (sig_xx * K1 + sig_xy * K4 + sig_xz * K7);
+    wF[q][0][2][tx] = wJ * (sig_xx * K2 + sig_xy * K5 + sig_xz * K8);
+    wF[q][1][0][tx] = wJ * (sig_xy * K0 + sig_yy * K3 + sig_yz * K6);
+    wF[q][1][1][tx] = wJ * (sig_xy * K1 + sig_yy * K4 + sig_yz * K7);
+    wF[q][1][2][tx] = wJ * (sig_xy * K2 + sig_yy * K5 + sig_yz * K8);
+    wF[q][2][0][tx] = wJ * (sig_xz * K0 + sig_yz * K3 + sig_zz * K6);
+    wF[q][2][1][tx] = wJ * (sig_xz * K1 + sig_yz * K4 + sig_zz * K7);
+    wF[q][2][2][tx] = wJ * (sig_xz * K2 + sig_yz * K5 + sig_zz * K8);
   }
 
   __syncthreads();
 
   // --- Scatter (all threads, no intra-block atomics) ---
-  // Thread (tx, ty, tz) uniquely owns (node=tx, component=ty) for its cell tz,
+  // Thread (tz, ty, tx) uniquely owns (node=tz, component=ty) for its cell tx,
   // accumulates over quad points in registers, then one global atomic.
-  if (active and tx < ndofs)
+  if (active and tz < ndofs)
   {
     T contrib = T(0);
     for (int q = 0; q < nq; ++q)
     {
-      const T dphi_xi = dphix[q * ndofs + tx];
-      const T dphi_eta = dphiy[q * ndofs + tx];
-      const T dphi_zeta = dphiz[q * ndofs + tx];
-      contrib += wF[tz][q][ty][0] * dphi_xi + wF[tz][q][ty][1] * dphi_eta
-                 + wF[tz][q][ty][2] * dphi_zeta;
+      const T dphi_xi = dphix[q * ndofs + tz];
+      const T dphi_eta = dphiy[q * ndofs + tz];
+      const T dphi_zeta = dphiz[q * ndofs + tz];
+      contrib += wF[q][ty][0][tx] * dphi_xi + wF[q][ty][1][tx] * dphi_eta
+                 + wF[q][ty][2][tx] * dphi_zeta;
     }
-    const std::int32_t dof = cell_dofs[cell_id * ndofs + tx] * 3 + ty;
+    const std::int32_t dof = nodes[tz][tx] * 3 + ty;
     atomicAdd(&b[dof], contrib);
   }
 }
+
+template <int P>
+struct elasticity_traits;
+
+template <>
+struct elasticity_traits<2>{
+  static constexpr int ndofs = 10; // number of scalar dofs per cell
+  static constexpr int nq = 4;     // number of quadrature points per cell
+  static constexpr int cells_per_block = 32; // number of cells per CUDA block
+};
+
+template <>
+struct elasticity_traits<3>{
+  static constexpr int ndofs = 20; // number of scalar dofs per cell
+  static constexpr int nq = 14;     // number of quadrature points per cell
+  static constexpr int cells_per_block = 16; // number of cells per CUDA block
+};
 
 } // namespace detail
 
@@ -185,24 +210,28 @@ __global__ void elasticity_action(T* __restrict__ b, const T* __restrict__ u,
 /// @param wdetJ Weighted geometry detJ at each quadrature point
 /// @param cell_dofs DofMap
 /// @param cells List of cells to integrate over
-template <typename T, typename ContainerT, typename ContainerI>
+
+template <int P, typename T, typename ContainerT, typename ContainerI>
+
 void assemble_elasticity_action(dolfinx::la::Vector<T, ContainerT>& b,
                                 const dolfinx::la::Vector<T, ContainerT>& u,
-                                const ContainerT& phi_data, const ContainerT& K,
+                                const ContainerT& phi_data, 
+                                const ContainerT& K,
                                 const ContainerT& wdetJ,
                                 const ContainerI& cell_dofs,
                                 const ContainerI& cells)
 {
-  constexpr int ndofs = 10;
-  constexpr int nq = 4;
+  constexpr int ndofs = detail::elasticity_traits<P>::ndofs;
+  constexpr int nq = detail::elasticity_traits<P>::nq;
+  constexpr int cells_per_block = detail::elasticity_traits<P>::cells_per_block;
 
-  dim3 block_size(2, 3, ndofs);
-  dim3 grid_size(cells.size() / 2 + 1);
+  dim3 block_size(cells_per_block, 3, ndofs);
+  dim3 grid_size((cells.size() + cells_per_block - 1) / cells_per_block);
 
   T lambda = 1.0;
   T mu = 1.0;
 
-  detail::elasticity_action<T, nq, ndofs, 2><<<grid_size, block_size>>>(
+  detail::elasticity_action<T, nq, ndofs, cells_per_block><<<grid_size, block_size>>>(
       b.array().data().get(), u.array().data().get(), phi_data.data().get(),
       K.data().get(), wdetJ.data().get(), cell_dofs.data().get(),
       cells.data().get(), cells.size(), lambda, mu);
