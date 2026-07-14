@@ -192,14 +192,22 @@ template <>
 struct elasticity_traits<2>{
   static constexpr int ndofs = 10; // number of scalar dofs per cell
   static constexpr int nq = 4;     // number of quadrature points per cell
-  static constexpr int cells_per_block = 32; // number of cells per CUDA block
+  #if defined(__CUDA_ARCH__)
+    static constexpr int cells_per_block = 32; // number of cells per CUDA block
+  #else
+    static constexpr int cells_per_block = 16;
+    #endif
 };
 
 template <>
 struct elasticity_traits<3>{
   static constexpr int ndofs = 20; // number of scalar dofs per cell
   static constexpr int nq = 14;     // number of quadrature points per cell
-  static constexpr int cells_per_block = 16; // number of cells per CUDA block
+  #if defined(__CUDA_ARCH__)
+    static constexpr int cells_per_block = 16; // number of cells per CUDA block
+  #else
+    static constexpr int cells_per_block = 8; // number of cells per CUDA block
+  #endif
 };
 
 } // namespace detail
@@ -219,7 +227,9 @@ void assemble_elasticity_action(dolfinx::la::Vector<T, ContainerT>& b,
                                 const ContainerT& K,
                                 const ContainerT& wdetJ,
                                 const ContainerI& cell_dofs,
-                                const ContainerI& cells)
+                                const ContainerI& cells,
+                                const T lambda = 1.0, 
+                                const T mu = 1.0)
 {
   constexpr int ndofs = detail::elasticity_traits<P>::ndofs;
   constexpr int nq = detail::elasticity_traits<P>::nq;
@@ -227,9 +237,6 @@ void assemble_elasticity_action(dolfinx::la::Vector<T, ContainerT>& b,
 
   dim3 block_size(cells_per_block, 3, ndofs);
   dim3 grid_size((cells.size() + cells_per_block - 1) / cells_per_block);
-
-  T lambda = 1.0;
-  T mu = 1.0;
 
   detail::elasticity_action<T, nq, ndofs, cells_per_block><<<grid_size, block_size>>>(
       b.array().data().get(), u.array().data().get(), phi_data.data().get(),
