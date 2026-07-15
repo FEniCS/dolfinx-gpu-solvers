@@ -20,10 +20,10 @@
 
 using namespace dolfinx;
 namespace po = boost::program_options;
-using T = float;
+using T = float; // float or double
 using U = dolfinx::scalar_value_t<T>;
 
-constexpr int polynomial_order = 2;
+constexpr int polynomial_order = 2; // 2 or 3 for P2 or P3 tetrahedra
 constexpr int quadrature_degree = 2 * (polynomial_order - 1);
 
 template <typename ContainerI>
@@ -142,6 +142,39 @@ int main(int argc, char* argv[])
     auto u = std::make_shared<fem::Function<T>>(V);
     auto b = std::make_shared<fem::Function<T>>(V);
 
+    auto left_boundary = [](auto x){ // x is a table of coordinates
+      std::vector<std::int8_t> marker(x.extent(1), false); // create a list called marker which has one entry for each point being checked
+      // mark points on the left boundary (x=0) as true
+      for (std::size_t p = 0; p < x.extent(1); ++p) // loop over all points
+      {
+        if (std::abs(x(0, p)) < 1e-8) // check if x coordiante is 0/close to 0
+        {
+          marker[p] = true; // mark this point as true
+        }
+      }
+      return marker;
+    };
+
+    // find the clamped nodes
+    std::vector<std::int32_t> bc_nodes = fem::locate_dofs_geometrical(*V, left_boundary); // in function space V, locate the dofs that are on the boundary
+    // find how many nodes there are
+    std::size_t num_dofs = u->x()->array().size(); // number of nodes in the mesh
+    // i.e. how many scalar values are stored in u
+    std::vector<std::int8_t> bc_marker_host(num_dofs, false); // create a list of bools for each node
+    
+    for (std::int32_t node : bc_nodes) // loop over all the clamped nodes
+    {
+      // mark the clamped nodes as true
+      bc_marker_host[3 *node + 0] = true;
+      bc_marker_host[3 *node + 1] = true;
+      bc_marker_host[3 *node + 2] = true;
+    }
+
+    // copy markers to GPU
+    thrust::device_vector<std::int8_t> bc_marker_device(bc_marker_host.begin(), bc_marker_host.end());
+    std::cout << "Number of clamped nodes = " << bc_nodes.size() << "\n";
+    std::cout << "Number of dofs = " << num_dofs << "\n";
+
     u->interpolate(
         [](auto x) -> std::pair<std::vector<T>, std::vector<std::size_t>>
         {
@@ -149,9 +182,9 @@ int main(int argc, char* argv[])
           std::vector<T> vals(3 * np, 0.0);
           for (std::size_t p = 0; p < np; ++p)
           {
-            vals[p] = std::sin(std::numbers::pi * x(0, p))
+            vals[p] = x(0,p) * std::sin(std::numbers::pi * x(0, p))
                       * std::cos(std::numbers::pi * x(1, p));
-            vals[np + p] = -std::cos(std::numbers::pi * x(0, p))
+            vals[np + p] = x(0,p) * -std::cos(std::numbers::pi * x(0, p))
                            * std::sin(std::numbers::pi * x(1, p));
           }
           return {vals, {3, np}};
@@ -189,7 +222,7 @@ int main(int argc, char* argv[])
     for (int rep = 0; rep < nrep; ++rep)
     {
       assemble_elasticity_action<polynomial_order>(b_device, u_device, phi_data, K, wdetJ,
-                                    gpu_dofmap.map(), cell_list);
+                                    gpu_dofmap.map(), cell_list, bc_marker_device);
     }
 
     device_synchronize();
@@ -230,7 +263,7 @@ int main(int argc, char* argv[])
 
     assemble_elasticity_action<polynomial_order>(
         b_device, u_device, phi_data, K, wdetJ,
-        gpu_dofmap.map(), cell_list);
+        gpu_dofmap.map(), cell_list, bc_marker_device);
 
     device_synchronize();
 

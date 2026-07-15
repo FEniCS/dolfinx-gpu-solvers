@@ -50,7 +50,10 @@ __global__ void elasticity_action(T* __restrict__ b, const T* __restrict__ u,
                                   const T* __restrict__ wdetJ_entity,
                                   const std::int32_t* __restrict__ cell_dofs,
                                   const std::int32_t* __restrict__ cells,
-                                  int ncells, T lambda, T mu)
+                                  int ncells,
+                                  const std::int8_t* __restrict__ bc_marker,
+                                  T lambda, 
+                                  T mu)
 {
   const int tx = threadIdx.x; // 0..cells_per_block-1 (cell within block)
   const int tz = threadIdx.z; // 0..ndofs-1           (node index)
@@ -78,8 +81,18 @@ __global__ void elasticity_action(T* __restrict__ b, const T* __restrict__ u,
 
   if (active and tz < ndofs)
   {
-    const std::int32_t dof = nodes[tz][tx] * 3 + ty;
-    scratch[tz * 3 + ty][tx] = u[dof];
+    const std::int32_t node = nodes[tz][tx]; // global node number
+    const std::int32_t dof = node* 3 + ty; // global dof number
+
+    if (bc_marker[dof]) // check if node is clamped
+    {
+      b[dof] = u[dof]; // for a clamped DOF, output equals input
+      scratch[tz * 3 + ty][tx] = T(0); // set the value to zero if it is clamped
+    }
+    else
+    {
+      scratch[tz * 3 + ty][tx] = u[dof]; // otherwise, load the value from the input vector
+    }
   }
 
   __syncthreads();
@@ -180,8 +193,13 @@ __global__ void elasticity_action(T* __restrict__ b, const T* __restrict__ u,
       contrib += wF[q][ty][0][tx] * dphi_xi + wF[q][ty][1][tx] * dphi_eta
                  + wF[q][ty][2][tx] * dphi_zeta;
     }
-    const std::int32_t dof = nodes[tz][tx] * 3 + ty;
-    atomicAdd(&b[dof], contrib);
+    const std::int32_t node = nodes[tz][tx]; // global node number
+    const std::int32_t dof = node * 3 + ty; // global dof number
+
+    if (!bc_marker[dof]) // only add to output if node is not clamped
+    {
+      atomicAdd(&b[dof], contrib); // add cell contribution to global output vector
+    }
   }
 }
 
@@ -192,10 +210,10 @@ template <>
 struct elasticity_traits<2>{
   static constexpr int ndofs = 10; // number of scalar dofs per cell
   static constexpr int nq = 4;     // number of quadrature points per cell
-  #if defined(__CUDA_ARCH__)
-    static constexpr int cells_per_block = 32; // number of cells per CUDA block
-  #else
+  #if defined(__HIP_PLATFORM_AMD__)
     static constexpr int cells_per_block = 16;
+  #else
+    static constexpr int cells_per_block = 32; // number of cells per CUDA block
     #endif
 };
 
@@ -203,10 +221,10 @@ template <>
 struct elasticity_traits<3>{
   static constexpr int ndofs = 20; // number of scalar dofs per cell
   static constexpr int nq = 14;     // number of quadrature points per cell
-  #if defined(__CUDA_ARCH__)
-    static constexpr int cells_per_block = 16; // number of cells per CUDA block
+  #if defined(__HIP_PLATFORM_AMD__)
+    static constexpr int cells_per_block = 8;
   #else
-    static constexpr int cells_per_block = 8; // number of cells per CUDA block
+    static constexpr int cells_per_block = 16; // number of cells per CUDA block
   #endif
 };
 
@@ -219,7 +237,7 @@ struct elasticity_traits<3>{
 /// @param cell_dofs DofMap
 /// @param cells List of cells to integrate over
 
-template <int P, typename T, typename ContainerT, typename ContainerI>
+template <int P, typename T, typename ContainerT, typename ContainerI, typename ContainerB>
 
 void assemble_elasticity_action(dolfinx::la::Vector<T, ContainerT>& b,
                                 const dolfinx::la::Vector<T, ContainerT>& u,
@@ -228,6 +246,7 @@ void assemble_elasticity_action(dolfinx::la::Vector<T, ContainerT>& b,
                                 const ContainerT& wdetJ,
                                 const ContainerI& cell_dofs,
                                 const ContainerI& cells,
+                                const ContainerB& bc_marker,
                                 const T lambda = 1.0, 
                                 const T mu = 1.0)
 {
@@ -241,5 +260,5 @@ void assemble_elasticity_action(dolfinx::la::Vector<T, ContainerT>& b,
   detail::elasticity_action<T, nq, ndofs, cells_per_block><<<grid_size, block_size>>>(
       b.array().data().get(), u.array().data().get(), phi_data.data().get(),
       K.data().get(), wdetJ.data().get(), cell_dofs.data().get(),
-      cells.data().get(), cells.size(), lambda, mu);
+      cells.data().get(), cells.size(), bc_marker.data().get(), lambda, mu);
 }
