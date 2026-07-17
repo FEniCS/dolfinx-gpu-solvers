@@ -10,9 +10,11 @@
 #include <dolfinx.h>
 #include <dolfinx/la/Vector.h>
 #include <thrust/device_vector.h>
+#include <thrust/fill.h>
 
 #include "../../include/gpu_geometry.h"
 #include "elasticity.h"
+#include "cg.h"
 #include "util.h"
 
 #include <fstream>
@@ -158,8 +160,7 @@ int main(int argc, char* argv[])
     // find the clamped nodes
     std::vector<std::int32_t> bc_nodes = fem::locate_dofs_geometrical(*V, left_boundary); // in function space V, locate the dofs that are on the boundary
     // find how many nodes there are
-    std::size_t num_dofs = u->x()->array().size(); // number of nodes in the mesh
-    // i.e. how many scalar values are stored in u
+    std::size_t num_dofs = u->x()->array().size(); // number of scalar entries stored in u
     std::vector<std::int8_t> bc_marker_host(num_dofs, false); // create a list of bools for each node
     
     for (std::int32_t node : bc_nodes) // loop over all the clamped nodes
@@ -193,12 +194,12 @@ int main(int argc, char* argv[])
     // Copy u to device
     la::Vector<T, thrust::device_vector<T>> u_device(*(u->x()));
     la::Vector<T, thrust::device_vector<T>> b_device(V->dofmap()->index_map, 3);
+    using DeviceVector = decltype(b_device);
 
     // TODO: interpolate something into u
 
     // Tabulate basis for element
     std::size_t nq = g_device.qpoints().size() / 3;
-    std::cout << "runtime nq = " << nq << "\n";
     auto shape = elem_p2.tabulate_shape(1, nq);
     std::vector<T> table(
         std::accumulate(shape.begin(), shape.end(), 1, std::multiplies<int>()));
@@ -213,71 +214,48 @@ int main(int argc, char* argv[])
     assert(shape[3] == 1);
     thrust::device_vector<T> phi_data(table.begin(), table.end());
 
-    int nrep = 10;
-    auto start = std::chrono::high_resolution_clock::now();
+    auto A = [&](DeviceVector& output, const DeviceVector& input){
+      thrust::fill(thrust::device, output.array().begin(), output.array().end(), T(0));
 
-    thrust::fill(b_device.array().begin(), b_device.array().end(), T(0));
-    device_synchronize();
-
-    for (int rep = 0; rep < nrep; ++rep)
-    {
-      assemble_elasticity_action<polynomial_order>(b_device, u_device, phi_data, K, wdetJ,
-                                    gpu_dofmap.map(), cell_list, bc_marker_device);
-    }
-
-    device_synchronize();
-
-    auto stop = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double> duration = stop - start;
-    double time = duration.count();
-    double number_of_dofs = static_cast<double>(u_device.array().size());
-    double computation_rate = nrep * number_of_dofs / (1e9 * time);
-    
-    std::cout << "Computation rate = " << computation_rate << " Gdofs/s\n";
-    std::cout << "Number of dofs = " << number_of_dofs << "\n";
-
-    // save result to CSV file
-    const std::string filename = "elasticity_rate_vs_n.csv";
-
-    std::ifstream check_file(filename);
-    bool write_header = !check_file.good();
-    check_file.close();
-
-    std::ofstream csv(filename, std::ios::app);
-
-    if (write_header)
-    {
-      csv << "n,number_of_dofs,time_s,nrep,computation_rate_Gdofs_s\n";
-    }
-
-    csv << n << "," << number_of_dofs << "," << time << "," << nrep << "," << computation_rate << "\n";
-
-    thrust::copy(b_device.array().begin(), b_device.array().end(),
-                 b->x()->array().begin());
-
-    dolfinx::list_timings(MPI_COMM_WORLD);
-
-    // Correctness check: run once only
-    thrust::fill(b_device.array().begin(), b_device.array().end(), T(0));
-    device_synchronize();
-
-    assemble_elasticity_action<polynomial_order>(
-        b_device, u_device, phi_data, K, wdetJ,
+      assemble_elasticity_action<polynomial_order>(output, input, phi_data, K, wdetJ,
         gpu_dofmap.map(), cell_list, bc_marker_device);
+    };
+
+    // construct b = A*u_exact
+    A(b_device, u_device);
+
+    // 0 initial guess
+    DeviceVector x_device(V->dofmap()->index_map, 3);
+    thrust::fill(thrust::device, x_device.array().begin(), x_device.array().end(), T(0));
+
+    // create CG solver
+    elasticity::CGSolver<DeviceVector> cg_solver(V->dofmap()->index_map, 3);
+    cg_solver.set_max_iterations(1000);
+    cg_solver.set_tolerance(T(1e-8));
+
+    const int num_iterations = cg_solver.solve(A, x_device, b_device);
 
     device_synchronize();
 
-    thrust::copy(b_device.array().begin(), b_device.array().end(),
-                b->x()->array().begin());
+    auto x = std::make_shared<fem::Function<T>>(V);
 
-    std::cout << "b norm = " << std::setprecision(17) << dolfinx::la::norm(*b->x()) << "\n";
+    thrust::copy(x_device.array().begin(), x_device.array().end(), x->x()->array().begin());
+    thrust::copy(b_device.array().begin(), b_device.array().end(), b->x()->array().begin());
 
-    // const auto& b_array = b->x()->array();
+    std::cout << std::setprecision(17);
 
-    // for (std::size_t i = 0; i < b_array.size(); ++i)
-    // {
-    //   std::cout << "b[" << i << "] = " << b_array[i] << "\n";
-    // }
+    std::cout << "Exact u norm = "
+              << dolfinx::la::norm(*u->x()) << "\n";
+
+    std::cout << "Computed x norm = "
+              << dolfinx::la::norm(*x->x()) << "\n";
+
+    std::cout << "b norm = "
+              << dolfinx::la::norm(*b->x()) << "\n";
+
+    std::cout << "Number of iterations = "
+              << num_iterations << "\n";
+
   }
 
   MPI_Finalize();

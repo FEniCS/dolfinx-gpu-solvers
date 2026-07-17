@@ -86,7 +86,6 @@ __global__ void elasticity_action(T* __restrict__ b, const T* __restrict__ u,
 
     if (bc_marker[dof]) // check if node is clamped
     {
-      b[dof] = u[dof]; // for a clamped DOF, output equals input
       scratch[tz * 3 + ty][tx] = T(0); // set the value to zero if it is clamped
     }
     else

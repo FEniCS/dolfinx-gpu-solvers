@@ -11,10 +11,10 @@ dtype = np.float32 # float32 or float64
 
 ### Python comparison for GPU linear elasticity demo
 
-polynomial_order = 3 # 2 or 3 for P2 or P3 tetrahedra
+polynomial_order = 2 # 2 or 3 for P2 or P3 tetrahedra
 quadrature_degree = 2 * (polynomial_order - 1)
 
-n = 80
+n = 20
 msh = create_box(
     MPI.COMM_WORLD,
     [np.array([0.0, 0.0, 0.0], dtype=dtype), 
