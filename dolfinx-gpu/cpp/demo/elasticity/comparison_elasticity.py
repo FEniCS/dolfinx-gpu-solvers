@@ -7,7 +7,10 @@ from basix.ufl import element
 from dolfinx import fem, mesh, la
 from dolfinx.mesh import CellType, GhostMode, create_box, locate_entities_boundary
 
-dtype = np.float32 # float32 or float64
+from petsc4py import PETSc
+from dolfinx.fem.petsc import assemble_matrix as assemble_petsc_matrix
+
+dtype = np.float64 # float32 or float64
 
 ### Python comparison for GPU linear elasticity demo
 
@@ -95,12 +98,30 @@ def u_expr(x):
 np.set_printoptions(precision=3, suppress=True, linewidth=200)
 u.interpolate(u_expr)
 
-A = fem.assemble_matrix(a, bcs=[bc])
+A = assemble_petsc_matrix(a, bcs=[bc])
+A.assemble()
 
 b = fem.Function(V, dtype=dtype)
 b.x.array[:] = 0.0
 
-A.mult(u.x, b.x)
+A.mult(u.x.petsc_vec, b.x.petsc_vec) # compute b = A * u_exact
 
-print(b.x.array)
-print('b=\n', la.norm(b.x))
+# 0 initial guess
+x = fem.Function(V, dtype=dtype)
+x.x.array[:] = 0.0
+
+# Set solver options
+solver = PETSc.KSP().create(msh.comm)
+solver.setOperators(A)
+solver.setType(PETSc.KSP.Type.CG)
+solver.getPC().setType(PETSc.PC.Type.NONE)
+solver.setTolerances(rtol=1e-5, max_it=5000)
+solver.setInitialGuessNonzero(False)
+
+solver.solve(b.x.petsc_vec, x.x.petsc_vec)
+x.x.scatter_forward() # update ghost values
+
+print("Exact u norm = ", u.x.petsc_vec.norm())
+print("Computed x norm = ", x.x.petsc_vec.norm())
+print("b norm = ", b.x.petsc_vec.norm())
+print("number of iterations = ", solver.getIterationNumber())

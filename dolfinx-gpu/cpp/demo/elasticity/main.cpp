@@ -22,7 +22,7 @@
 
 using namespace dolfinx;
 namespace po = boost::program_options;
-using T = float; // float or double
+using T = double; // float or double
 using U = dolfinx::scalar_value_t<T>;
 
 constexpr int polynomial_order = 2; // 2 or 3 for P2 or P3 tetrahedra
@@ -230,8 +230,8 @@ int main(int argc, char* argv[])
 
     // create CG solver
     elasticity::CGSolver<DeviceVector> cg_solver(V->dofmap()->index_map, 3);
-    cg_solver.set_max_iterations(1000);
-    cg_solver.set_tolerance(T(1e-8));
+    cg_solver.set_max_iterations(5000);
+    cg_solver.set_tolerance(T(1e-5));
 
     const int num_iterations = cg_solver.solve(A, x_device, b_device);
 
