@@ -202,12 +202,89 @@ __global__ void elasticity_action(T* __restrict__ b, const T* __restrict__ u,
   }
 }
 
+// diagonal needed for Jacobi preconditioner
+template <typename T, int nq, int ndofs, int cells_per_block>
+__global__ void elasticity_diagonal(
+  T* __restrict__ diagonal, // output diagonal vector
+  const T* __restrict__ phi_data,
+  const T* __restrict__ K_entity,
+  const T* __restrict__ wdetJ_entity,
+  const std::int32_t* __restrict__ cell_dofs,
+  const std::int32_t* __restrict__ cells,
+  int ncells,
+  const std::int8_t* __restrict__ bc_marker,
+  T lambda, 
+  T mu){
+    const int tx = threadIdx.x; // cell within block
+    const int ty = threadIdx.y; // displacement component (0,1,2)
+    const int tz = threadIdx.z; // local scalar basis function
+
+    const int cell_idx = blockIdx.x * cells_per_block + tx;
+
+    if (cell_idx >= ncells) return;
+
+    const std::size_t cell_id = static_cast<std::size_t>(cells[cell_idx]);
+    const std::int32_t node = cell_dofs[cell_id * ndofs + tz]; // global node number
+    const std::int32_t dof = node * 3 + ty; // global scalar dof
+
+    if (bc_marker[dof]) return; // skip clamped dofs, they're handled separately
+
+    // reference basis derivatives
+    const T* dphi_dxi = phi_data + nq * ndofs;
+    const T* dphi_deta = dphi_dxi + nq * ndofs;
+    const T* dphi_dzeta = dphi_deta + nq * ndofs;
+
+    // geometry for this cell
+    const T* K = K_entity + cell_id * 9 * nq;
+    const T* wdetJ = wdetJ_entity + cell_id * nq;
+
+    T cell_diagonal = T(0); // local diagonal contribution for this dof
+
+    for (int q = 0; q < nq; ++q){
+      // read reference basis derivatives for this quadrature point and dof
+      const T dxi = dphi_dxi[q * ndofs + tz];
+      const T deta = dphi_deta[q * ndofs + tz];
+      const T dzeta = dphi_dzeta[q * ndofs + tz];
+
+      // transform reference derivatives to physical derivatives using K = J^{-T}
+      const T gx = K[0 * nq + q] * dxi + K[1 * nq + q] * deta + K[2 * nq + q] * dzeta;
+      const T gy = K[3 * nq + q] * dxi + K[4 * nq + q] * deta + K[5 * nq + q] * dzeta;
+      const T gz = K[6 * nq + q] * dxi + K[7 * nq + q] * deta + K[8 * nq + q] * dzeta;
+
+      // form diagonal contribution
+      const T gradient_squared = gx * gx + gy * gy + gz * gz;
+
+      T component_gradient; // variable to hold derivative of the component corresponding to this thread
+
+      if (ty == 0) component_gradient = gx;
+      else if (ty == 1) component_gradient = gy;
+      else component_gradient = gz;
+
+      cell_diagonal += wdetJ[q] * (mu * gradient_squared + (lambda + mu) * component_gradient * component_gradient);
+    }
+
+    atomicAdd(&diagonal[dof], cell_diagonal);
+  }
+
 template <int P>
 struct elasticity_traits;
 
 template <>
+struct elasticity_traits<1>{
+  static constexpr int ndofs = 4; // number of scalar dofs per cell
+  static constexpr int quadrature_degree = 1; // quadrature degree for P1 tetrahedra
+  static constexpr int nq = 1;     // number of quadrature points per cell
+  #if defined(__HIP_PLATFORM_AMD__)
+    static constexpr int cells_per_block = 16;
+  #else
+    static constexpr int cells_per_block = 32; // number of cells per CUDA block
+    #endif
+};
+
+template <>
 struct elasticity_traits<2>{
   static constexpr int ndofs = 10; // number of scalar dofs per cell
+  static constexpr int quadrature_degree = 2; // quadrature degree for P2 tetrahedra
   static constexpr int nq = 4;     // number of quadrature points per cell
   #if defined(__HIP_PLATFORM_AMD__)
     static constexpr int cells_per_block = 16;
@@ -219,6 +296,7 @@ struct elasticity_traits<2>{
 template <>
 struct elasticity_traits<3>{
   static constexpr int ndofs = 20; // number of scalar dofs per cell
+  static constexpr int quadrature_degree = 4; // quadrature degree for P3 tetrahedra
   static constexpr int nq = 14;     // number of quadrature points per cell
   #if defined(__HIP_PLATFORM_AMD__)
     static constexpr int cells_per_block = 8;
@@ -227,7 +305,15 @@ struct elasticity_traits<3>{
   #endif
 };
 
+template <typename T>
+__global__ void set_identity_rows(T* output, const T* input, const std::int8_t* bc_marker, std::size_t size){
+  const std::size_t i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i < size and bc_marker[i]){
+    output[i] = input[i]; // set the value to the input if it is clamped
+}
+}
 } // namespace detail
+
 
 /// @brief Assemble 3D elasticity action vector
 /// @param phi_data Basis evaluation data at reference quadrature points
@@ -246,8 +332,8 @@ void assemble_elasticity_action(dolfinx::la::Vector<T, ContainerT>& b,
                                 const ContainerI& cell_dofs,
                                 const ContainerI& cells,
                                 const ContainerB& bc_marker,
-                                const T lambda = 1.0, 
-                                const T mu = 1.0)
+                                const T lambda = T(1), 
+                                const T mu = T(1))
 {
   constexpr int ndofs = detail::elasticity_traits<P>::ndofs;
   constexpr int nq = detail::elasticity_traits<P>::nq;
@@ -258,6 +344,38 @@ void assemble_elasticity_action(dolfinx::la::Vector<T, ContainerT>& b,
 
   detail::elasticity_action<T, nq, ndofs, cells_per_block><<<grid_size, block_size>>>(
       b.array().data().get(), u.array().data().get(), phi_data.data().get(),
+      K.data().get(), wdetJ.data().get(), cell_dofs.data().get(),
+      cells.data().get(), cells.size(), bc_marker.data().get(), lambda, mu);
+
+  constexpr int identity_threads = 256;
+  const std::size_t identity_blocks = (b.array().size() + identity_threads - 1) / identity_threads;
+  
+  detail::set_identity_rows<T><<<static_cast<unsigned int>(identity_blocks), identity_threads>>>(
+      b.array().data().get(), u.array().data().get(), bc_marker.data().get(), b.array().size());
+}
+
+
+template <int P, typename T, typename ContainerT, typename ContainerI, typename ContainerB>
+
+void assemble_elasticity_diagonal(dolfinx::la::Vector<T, ContainerT>& diagonal,
+                                  const ContainerT& phi_data, 
+                                  const ContainerT& K,
+                                  const ContainerT& wdetJ,
+                                  const ContainerI& cell_dofs,
+                                  const ContainerI& cells,
+                                  const ContainerB& bc_marker,
+                                  const T lambda = T(1), 
+                                  const T mu = T(1))
+{
+  constexpr int ndofs = detail::elasticity_traits<P>::ndofs;
+  constexpr int nq = detail::elasticity_traits<P>::nq;
+  constexpr int cells_per_block = detail::elasticity_traits<P>::cells_per_block;
+
+  dim3 block_size(cells_per_block, 3, ndofs);
+  dim3 grid_size((cells.size() + cells_per_block - 1) / cells_per_block);
+
+  detail::elasticity_diagonal<T, nq, ndofs, cells_per_block><<<grid_size, block_size>>>(
+      diagonal.array().data().get(), phi_data.data().get(),
       K.data().get(), wdetJ.data().get(), cell_dofs.data().get(),
       cells.data().get(), cells.size(), bc_marker.data().get(), lambda, mu);
 }

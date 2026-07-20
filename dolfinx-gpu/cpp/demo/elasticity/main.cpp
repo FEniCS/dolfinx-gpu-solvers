@@ -9,8 +9,12 @@
 #include <boost/program_options.hpp>
 #include <dolfinx.h>
 #include <dolfinx/la/Vector.h>
+
 #include <thrust/device_vector.h>
 #include <thrust/fill.h>
+#include <thrust/functional.h>
+#include <thrust/inner_product.h>
+#include <thrust/transform.h>
 
 #include "../../include/gpu_geometry.h"
 #include "elasticity.h"
@@ -19,14 +23,16 @@
 
 #include <fstream>
 #include <iomanip>
+#include <cmath>
 
 using namespace dolfinx;
 namespace po = boost::program_options;
 using T = double; // float or double
 using U = dolfinx::scalar_value_t<T>;
 
-constexpr int polynomial_order = 2; // 2 or 3 for P2 or P3 tetrahedra
-constexpr int quadrature_degree = 2 * (polynomial_order - 1);
+constexpr int polynomial_order = 3; // 1, 2 or 3 for P1, P2 or P3 tetrahedra
+constexpr int quadrature_degree = detail::elasticity_traits<polynomial_order>::quadrature_degree;
+constexpr bool jacobi = true; // use Jacobi preconditioner in CG
 
 template <typename ContainerI>
 class GPUDofMap
@@ -73,6 +79,17 @@ private:
   std::array<std::size_t, 2> _shape;
   std::shared_ptr<const dolfinx::common::IndexMap> _im;
 };
+
+template <typename Scalar>
+struct invert_jacobi_diagonal{
+  __host__ __device__ Scalar operator()(Scalar diagonal, std::int8_t bc_marker) const{
+    if (bc_marker)
+      return Scalar(1); // set the value to 1 if it is clamped
+    else
+      return Scalar(1) / diagonal; // invert the diagonal value
+  }
+};
+
 
 int main(int argc, char* argv[])
 {
@@ -231,9 +248,24 @@ int main(int argc, char* argv[])
     // create CG solver
     elasticity::CGSolver<DeviceVector> cg_solver(V->dofmap()->index_map, 3);
     cg_solver.set_max_iterations(5000);
-    cg_solver.set_tolerance(T(1e-5));
+    cg_solver.set_tolerance(T(1e-8));
 
-    const int num_iterations = cg_solver.solve(A, x_device, b_device);
+    if (jacobi){
+      DeviceVector diagonal_inverse(V->dofmap()->index_map, 3);
+      thrust::fill(thrust::device, diagonal_inverse.array().begin(), diagonal_inverse.array().end(), T(0));
+      
+      assemble_elasticity_diagonal<polynomial_order>(diagonal_inverse, phi_data, K, wdetJ,
+        gpu_dofmap.map(), cell_list, bc_marker_device);
+      
+      // convert diag(A) to diag(A)^{-1}
+      thrust::transform(thrust::device, diagonal_inverse.array().begin(), diagonal_inverse.array().end(),
+        bc_marker_device.begin(), diagonal_inverse.array().begin(), invert_jacobi_diagonal<T>());
+
+      // copy diag(A)^{-1} to CG solver
+      cg_solver.set_diag_inverse(diagonal_inverse);
+    }
+
+    const int num_iterations = cg_solver.solve(A, x_device, b_device, jacobi);
 
     device_synchronize();
 

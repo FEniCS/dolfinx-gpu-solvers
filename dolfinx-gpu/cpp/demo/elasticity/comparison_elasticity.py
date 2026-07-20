@@ -14,10 +14,11 @@ dtype = np.float64 # float32 or float64
 
 ### Python comparison for GPU linear elasticity demo
 
-polynomial_order = 2 # 2 or 3 for P2 or P3 tetrahedra
+polynomial_order = 3 # 2 or 3 for P2 or P3 tetrahedra
 quadrature_degree = 2 * (polynomial_order - 1)
+jacobi = True # use Jacobi preconditioner in CG
 
-n = 20
+n = 1
 msh = create_box(
     MPI.COMM_WORLD,
     [np.array([0.0, 0.0, 0.0], dtype=dtype), 
@@ -114,8 +115,8 @@ x.x.array[:] = 0.0
 solver = PETSc.KSP().create(msh.comm)
 solver.setOperators(A)
 solver.setType(PETSc.KSP.Type.CG)
-solver.getPC().setType(PETSc.PC.Type.NONE)
-solver.setTolerances(rtol=1e-5, max_it=5000)
+solver.getPC().setType(PETSc.PC.Type.JACOBI if jacobi else PETSc.PC.Type.NONE)
+solver.setTolerances(rtol=1e-8, max_it=5000)
 solver.setInitialGuessNonzero(False)
 
 solver.solve(b.x.petsc_vec, x.x.petsc_vec)

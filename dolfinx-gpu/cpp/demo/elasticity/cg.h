@@ -9,9 +9,13 @@
 #include <thrust/transform.h>
 #include <thrust/device_vector.h>
 #include <thrust/execution_policy.h>
+#include <thrust/functional.h>
 
 #include <memory>
 #include <stdexcept>
+#include <cmath>
+#include <iostream>
+#include <iomanip>
 
 namespace elasticity
 {
@@ -37,7 +41,8 @@ namespace elasticity
             CGSolver(std::shared_ptr<const dolfinx::common::IndexMap> _map, int _bs)
             : _r(std::make_unique<Vector>(_map, _bs)), // residual vector
               _p(std::make_unique<Vector>(_map, _bs)), // search direction vector
-              _Ap(std::make_unique<Vector>(_map, _bs)) // matrix-vector product vector
+              _y(std::make_unique<Vector>(_map, _bs)), // matrix-vector product vector
+              _diag_inv(std::make_unique<Vector>(_map, _bs)) // inverse of the diagonal of A
             {
             }
 
@@ -58,36 +63,51 @@ namespace elasticity
                 _rtol = tol;
             }
 
+            void set_diag_inverse(const Vector& diag_inv){
+                if (diag_inv.array().size() != _diag_inv->array().size())
+                    throw std::runtime_error("Diagonal inverse vector must be the same size as the solver's diagonal inverse vector");
+                
+                copy(*_diag_inv, diag_inv);
+            }
+
             template <typename Operator>
-            int solve(Operator& A, Vector& x, const Vector& b){
+            int solve(Operator& A, Vector& x, const Vector& b, bool jacobi = true){
                 if (x.array().size() != b.array().size())
                     throw std::runtime_error("Vectors x and b must be the same size");
-                
+
                 // compute initial residual r_0 = b - A*x_0
-                A(*_Ap, x); // _Ap = A*x
-                axpy(*_r, T(-1), *_Ap, b); // _r = b - A*x
+                A(*_y, x); // _Ap = A*x
+                axpy(*_r, T(-1), *_y, b); // _r = b - A*x
 
-                // set initial search direction p_0 = r_0
-                copy(*_p, *_r); // _p = r
+                const T residual_squared0 = dot(*_r, *_r);
 
-                // compute initial residual norm i.e. residua; squared
-                const T rnorm0 = dot(*_r, *_r); // rnorm = r^T * r
+                if (jacobi){
+                    // apply Jacobi preconditioner
+                    pointwise_mult(*_p, *_r, *_diag_inv); // p_0 = D^{-1} * r_0
+                }
+                else{
+                    // set initial search direction
+                    copy(*_p, *_r); // p_0 = r_0
+                }
+
+                // compute initial residual norm i.e. residual squared
+                const T rnorm0 = dot(*_r, *_p); // rnorm = r^T * D^{-1} * r
                 T rnorm = rnorm0; // current residual norm
 
                 // compute the tolerance based on the initial residual norm
                 const T rtol2 = _rtol * _rtol;
 
-                if (abs(rnorm) < T(1e-12)) // if the initial guess is already the solution
+                if (residual_squared0 < T(1e-24)) // if the initial guess is already the solution
                     return 0;
                     
                 // main CG iteration loop
                 int k = 0;
                 while (k < _max_iter){
                     // compute matrix-vector product Ap = A*p
-                    A(*_Ap, *_p); // _Ap = A*p
+                    A(*_y, *_p); // _y = A*p
 
                     // check that p^TAp is positive i.e. A is positive definite
-                    const T pAp = dot(*_p, *_Ap);
+                    const T pAp = dot(*_p, *_y);
                     if (!(pAp > T(0))){
                         throw std::runtime_error("Matrix A is not positive definite");
                     }
@@ -99,10 +119,19 @@ namespace elasticity
                     axpy(x, alpha, *_p, x); // x = alpha * p + x
 
                     // update residual r = r - alpha * Ap
-                    axpy(*_r, T(-alpha), *_Ap, *_r); // r = -alpha * Ap + r
+                    axpy(*_r, T(-alpha), *_y, *_r); // r = -alpha * Ap + r
+
+                    if (jacobi){
+                        // y = D^{-1} * r
+                        pointwise_mult(*_y, *_r, *_diag_inv);
+                    }
+                    else{
+                        // y = r
+                        copy(*_y, *_r);
+                    }
 
                     // compute new residual norm
-                    const T rnorm_new = dot(*_r, *_r); // rnorm_new = r^T * r
+                    const T rnorm_new = dot(*_r, *_y); // rnorm_new = r^T * D^{-1} * r
 
                     ++k; // increment iteration counter
 
@@ -113,8 +142,10 @@ namespace elasticity
                     // compute beta = (r_new^T * r_new) / (r^T * r)
                     const T beta = rnorm_new / rnorm;
 
-                    // update search direction p = r + beta * p
-                    axpy(*_p, beta, *_p, *_r); // p = beta * p + r
+                    // update search direction 
+                    // with jacobi: p = D^{-1} * r + beta * p
+                    // without jacobi: p = r + beta * p
+                    axpy(*_p, beta, *_p, *_y); // p = beta * p + r
 
                     // update residual norm for next iteration
                     rnorm = rnorm_new;
@@ -151,6 +182,7 @@ namespace elasticity
                 thrust::copy(thrust::device, source_array.begin(), source_array.end(), dest_array.begin());
             }
 
+            // compute the linear combination of two vectors i.e. result = alpha * x + y
             static void axpy(Vector& result, T alpha, const Vector& x, const Vector& y){
                 auto& result_values = result.array();
                 const auto& x_values = x.array();
@@ -163,9 +195,23 @@ namespace elasticity
                 thrust::transform(thrust::device, x_values.begin(), x_values.end(), y_values.begin(), result_values.begin(), axpyOperation<T>{alpha});
             }
 
+            // compute the pointwise multiplication of two vectors i.e. result = x * y
+            static void pointwise_mult(Vector& result, const Vector& x, const Vector& y){
+                auto& result_values = result.array();
+                const auto& x_values = x.array();
+                const auto& y_values = y.array();
+
+                if (result_values.size() != x_values.size() || result_values.size() != y_values.size()){
+                    throw std::runtime_error("Vectors must be the same size for pointwise multiplication");
+                }
+
+                thrust::transform(thrust::device, x_values.begin(), x_values.end(), y_values.begin(), result_values.begin(), thrust::multiplies<T>());
+            }
+
             // working vectors
             std::unique_ptr<Vector> _r; // residual vector
             std::unique_ptr<Vector> _p; // search direction vector
-            std::unique_ptr<Vector> _Ap; // matrix-vector product vector
+            std::unique_ptr<Vector> _y; // matrix-vector product vector
+            std::unique_ptr<Vector> _diag_inv; // inverse of the diagonal of A
     };
 } // namespace elasticity
