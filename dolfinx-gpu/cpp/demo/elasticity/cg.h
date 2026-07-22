@@ -149,7 +149,6 @@ namespace elasticity
 
                     // update residual norm for next iteration
                     rnorm = rnorm_new;
-                    std::cout << "residual norm = " << std::setprecision(17) << rnorm << "\n";
                 }
             return k;
             }

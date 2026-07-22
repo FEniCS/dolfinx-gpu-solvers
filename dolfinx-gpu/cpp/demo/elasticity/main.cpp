@@ -9,19 +9,19 @@
 #include <boost/program_options.hpp>
 #include <dolfinx.h>
 #include <dolfinx/la/Vector.h>
+#include <basix/interpolation.h>
 
 #include <thrust/device_vector.h>
 #include <thrust/fill.h>
 #include <thrust/functional.h>
-#include <thrust/inner_product.h>
 #include <thrust/transform.h>
 
 #include "../../include/gpu_geometry.h"
 #include "elasticity.h"
 #include "cg.h"
+#include "p_transfer.h"
 #include "util.h"
 
-#include <fstream>
 #include <iomanip>
 #include <cmath>
 
@@ -30,9 +30,12 @@ namespace po = boost::program_options;
 using T = double; // float or double
 using U = dolfinx::scalar_value_t<T>;
 
-constexpr int polynomial_order = 3; // 1, 2 or 3 for P1, P2 or P3 tetrahedra
+constexpr int polynomial_order = 3; // 2 or 3 for P2 or P3 tetrahedra
 constexpr int quadrature_degree = detail::elasticity_traits<polynomial_order>::quadrature_degree;
 constexpr bool jacobi = true; // use Jacobi preconditioner in CG
+
+static_assert(polynomial_order >= 2, "Transfer requires a lower-order level");
+constexpr int coarse_order = polynomial_order - 1;
 
 template <typename ContainerI>
 class GPUDofMap
@@ -118,14 +121,13 @@ int main(int argc, char* argv[])
         mesh::CellType::tetrahedron, part));
 
     // Create list of all cells
-    int tdim = mesh->topology()->dim();
     std::vector<std::int32_t> cell_list_0(
         mesh->topology()->index_map(mesh->topology()->dim())->size_local());
     std::iota(cell_list_0.begin(), cell_list_0.end(), 0);
     thrust::device_vector<std::int32_t> cell_list(cell_list_0.begin(),
                                                   cell_list_0.end());
 
-    // Set degree 4 to get 14 quadrature points
+    // contruct geometry data using quadrature degree
     GPUGeometry<thrust::device_vector<U>, thrust::device_vector<std::int32_t>>
         g_device(mesh->geometry(), quadrature_degree);
     // detJ must be computed first: compute_K9 reuses it (via wdetJ) to
@@ -140,7 +142,9 @@ int main(int argc, char* argv[])
     // -----------------------------------------------------------------------
     // Finite element space
     // -----------------------------------------------------------------------
-    auto elem_p2 = basix::create_element<U>(
+    
+    // fine function space
+    auto elem = basix::create_element<U>(
         basix::element::family::P, basix::cell::type::tetrahedron, polynomial_order,
         basix::element::lagrange_variant::equispaced,
         basix::element::dpc_variant::unset,
@@ -149,11 +153,42 @@ int main(int argc, char* argv[])
     auto V
         = std::make_shared<fem::FunctionSpace<U>>(fem::create_functionspace<U>(
             mesh, std::make_shared<fem::FiniteElement<U>>(
-                      elem_p2, std::vector<std::size_t>{3})));
+                      elem, std::vector<std::size_t>{3})));
     GPUDofMap<thrust::device_vector<std::int32_t>> gpu_dofmap(*(V->dofmap()));
 
-    const auto& dofmap = *V->dofmap();
-    const auto map = dofmap.map();
+    // coarse function space
+    auto elem_coarse = basix::create_element<U>(
+      basix::element::family::P, basix::cell::type::tetrahedron, coarse_order,
+      basix::element::lagrange_variant::equispaced,
+      basix::element::dpc_variant::unset,
+      /* discontinuous = */ false
+    );
+
+    auto V_coarse = std::make_shared<fem::FunctionSpace<U>>(
+      fem::create_functionspace<U>(mesh, std::make_shared<fem::FiniteElement<U>>(
+        elem_coarse, std::vector<std::size_t>{3}))
+    );
+
+    // GPU dofmap for coarse function space
+    GPUDofMap<thrust::device_vector<std::int32_t>> gpu_dofmap_coarse(*(V_coarse->dofmap()));
+
+    // build local coarse to fine interpolation matrix
+    auto [P_host, P_shape] = basix::compute_interpolation_operator(elem_coarse, elem);
+
+    // check the interpolation matrix has the expected shape
+    constexpr int coarse_dofs_kernel = detail::elasticity_traits<coarse_order>::ndofs;
+    constexpr int fine_dofs_kernel = detail::elasticity_traits<polynomial_order>::ndofs;
+
+    if (P_shape[0] != fine_dofs_kernel || P_shape[1] != coarse_dofs_kernel){
+      throw std::runtime_error("Unexpected interpolation matrix dimensions");
+    }
+
+    std::cout << "Interpolation matrix shape = "
+              << P_shape[0] << " x "
+              << P_shape[1] << "\n";
+
+    // copy interpolation matrix to GPU
+    thrust::device_vector<T> P_device(P_host.begin(), P_host.end());
 
     // -----------------------------------------------------------------------
     // Functions
@@ -213,17 +248,58 @@ int main(int argc, char* argv[])
     la::Vector<T, thrust::device_vector<T>> b_device(V->dofmap()->index_map, 3);
     using DeviceVector = decltype(b_device);
 
-    // TODO: interpolate something into u
+    // test functions for interpolation from coarse to fine function space
+    auto test_field = [](auto x)
+        -> std::pair<std::vector<T>, std::vector<std::size_t>>
+    {
+      const std::size_t np = x.extent(1);
+      std::vector<T> vals(3 * np, T(0));
+
+      for (std::size_t p = 0; p < np; ++p)
+      {
+        const T X = x(0, p);
+        const T Y = x(1, p);
+        const T Z = x(2, p);
+
+        if constexpr (polynomial_order == 2)
+        {
+          // P1 to P2 with a linear field
+          vals[p]          = X;
+          vals[np + p]     = Y;
+          vals[2 * np + p] = Z;
+        }
+        else if constexpr (polynomial_order == 3)
+        {
+          // P2 to P3 test with a quadratic field
+          vals[p]          = X * X + Y * Z;
+          vals[np + p]     = Y * Y + X * Z;
+          vals[2 * np + p] = Z * Z + X * Y;
+        }
+      }
+
+      return {vals, {3, np}};
+    };    
+    
+
+    auto u_coarse = std::make_shared<fem::Function<T>>(V_coarse);
+    auto u_fine = std::make_shared<fem::Function<T>>(V);
+    u_coarse->interpolate(test_field);
+    u_fine->interpolate(test_field);
+
+    la::Vector<T, thrust::device_vector<T>> coarse_device(*(u_coarse->x()));
+    DeviceVector fine_from_coarse(V->dofmap()->index_map, 3);
+    thrust::fill(thrust::device, fine_from_coarse.array().begin(), fine_from_coarse.array().end(), T(0));
+
 
     // Tabulate basis for element
     std::size_t nq = g_device.qpoints().size() / 3;
-    auto shape = elem_p2.tabulate_shape(1, nq);
+    auto shape = elem.tabulate_shape(1, nq);
     std::vector<T> table(
         std::accumulate(shape.begin(), shape.end(), 1, std::multiplies<int>()));
     std::vector<T> qpoints(g_device.qpoints().size());
     thrust::copy(g_device.qpoints().begin(), g_device.qpoints().end(),
                  qpoints.begin());
-    elem_p2.tabulate(1, std::span(qpoints), {nq, 3}, std::span(table));
+    elem.tabulate(1, std::span(qpoints), {nq, 3}, std::span(table));
     assert(shape.size() == 4);
     assert(shape[0] == 4);
     assert(shape[1] == nq);
@@ -288,6 +364,70 @@ int main(int argc, char* argv[])
     std::cout << "Number of iterations = "
               << num_iterations << "\n";
 
+    // testing
+    const int test_cell = 0;
+
+    dim3 transfer_block(fine_dofs_kernel, 3);
+
+    p_transfer::prolong_one_cell<T, coarse_dofs_kernel, fine_dofs_kernel><<<1, transfer_block>>>(
+      test_cell,
+      P_device.data().get(),
+      gpu_dofmap_coarse.map().data().get(),
+      gpu_dofmap.map().data().get(),
+      coarse_device.array().data().get(),
+      fine_from_coarse.array().data().get()
+    );
+
+    device_synchronize();
+
+    // copy the fine dofmap to host
+    const auto fine_dofmap_host = V->dofmap()->map();
+    // get the exact values of the fine function
+    const auto fine_exact_values = u_fine->x()->array();
+    
+    std::vector<T> fine_from_coarse_host(fine_from_coarse.array().size());
+    thrust::copy(fine_from_coarse.array().begin(), fine_from_coarse.array().end(), fine_from_coarse_host.begin());
+
+    constexpr T tolerance = T(1e-12);
+    T max_error = T(0);
+    int failed_values = 0;
+
+    // loop over fine dofs and compare the computed values from the coarse function to the exact values from the fine function
+    for (int fine_i = 0; fine_i < fine_dofs_kernel; ++fine_i)
+    {
+      const std::int32_t fine_node = fine_dofmap_host(test_cell, fine_i);
+
+      // loop over the 3 components of the vector field
+      for (int component = 0; component < 3; ++component)
+      {
+        const std::int32_t dof = 3 * fine_node + component;
+
+        const T computed = fine_from_coarse_host[dof];
+        const T exact = fine_exact_values[dof];
+        const T error = std::abs(computed - exact);
+
+        max_error = std::max(max_error, error);
+
+        if (error > tolerance){
+
+          failed_values++;
+          
+          std::cout << "local dof " << fine_i
+                    << ", component " << component
+                    << ", error = " << std::scientific
+                    << std::setprecision(3) << error << '\n';
+        }
+
+        // std::cout << "local dof " << fine_i
+        //           << ", component " << component
+        //           << ": computed = " << computed
+        //           << ", exact = " << exact
+        //           << ", error = " << error << "\n";
+      }
+    }
+
+    std::cout << "Maximum prolongation error = " << max_error << "\n";
+    std::cout << "Number of failed values = " << failed_values << "\n";
   }
 
   MPI_Finalize();
