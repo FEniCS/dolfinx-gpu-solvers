@@ -10,6 +10,7 @@
 #include <dolfinx.h>
 #include <dolfinx/la/Vector.h>
 #include <basix/interpolation.h>
+#include <dolfinx/io/ADIOS2Writers.h>
 
 #include <thrust/device_vector.h>
 #include <thrust/fill.h>
@@ -417,14 +418,24 @@ int main(int argc, char* argv[])
                     << ", error = " << std::scientific
                     << std::setprecision(3) << error << '\n';
         }
-
-        // std::cout << "local dof " << fine_i
-        //           << ", component " << component
-        //           << ": computed = " << computed
-        //           << ", exact = " << exact
-        //           << ", error = " << error << "\n";
       }
     }
+
+    ///// for visualisation in PARAVIEW /////
+    // dolfinx function to hold the prolonged values for visualisation
+    auto u_prolonged = std::make_shared<fem::Function<T>>(V);
+    // copy GPU result into dolfinx function
+    std::copy(fine_from_coarse_host.begin(), fine_from_coarse_host.end(), u_prolonged->x()->array().begin());
+    
+    u_fine->name = "direct_fine";
+    u_prolonged->name = "prolonged_fine";
+    u_fine->x()->scatter_fwd();
+    u_prolonged->x()->scatter_fwd();
+    
+    #ifdef HAS_ADIOS2
+    io::VTXWriter<U> transfer_writer(MPI_COMM_WORLD, "p_transfer.bp", {u_fine, u_prolonged}, "bp4");
+    transfer_writer.write(0.0);
+    #endif
 
     std::cout << "Maximum prolongation error = " << max_error << "\n";
     std::cout << "Number of failed values = " << failed_values << "\n";
