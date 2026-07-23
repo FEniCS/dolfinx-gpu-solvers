@@ -366,12 +366,13 @@ int main(int argc, char* argv[])
               << num_iterations << "\n";
 
     // testing
-    const int test_cell = 0;
+    const std::size_t num_cells = V->dofmap()->map().extent(0);
+    constexpr int transfer_threads = 256;
+    const std::size_t total_transfer_tasks = num_cells * fine_dofs_kernel * 3;
+    const std::size_t transfer_blocks = (total_transfer_tasks + transfer_threads - 1) / transfer_threads;
 
-    dim3 transfer_block(fine_dofs_kernel, 3);
-
-    p_transfer::prolong_one_cell<T, coarse_dofs_kernel, fine_dofs_kernel><<<1, transfer_block>>>(
-      test_cell,
+    p_transfer::prolong_cells<T, coarse_dofs_kernel, fine_dofs_kernel><<<static_cast<int>(transfer_blocks), transfer_threads>>>(
+      num_cells,
       P_device.data().get(),
       gpu_dofmap_coarse.map().data().get(),
       gpu_dofmap.map().data().get(),
@@ -381,45 +382,33 @@ int main(int argc, char* argv[])
 
     device_synchronize();
 
-    // copy the fine dofmap to host
-    const auto fine_dofmap_host = V->dofmap()->map();
     // get the exact values of the fine function
     const auto fine_exact_values = u_fine->x()->array();
-    
+
+    // copy the GPU result to host for comparison
     std::vector<T> fine_from_coarse_host(fine_from_coarse.array().size());
     thrust::copy(fine_from_coarse.array().begin(), fine_from_coarse.array().end(), fine_from_coarse_host.begin());
 
     constexpr T tolerance = T(1e-12);
     T max_error = T(0);
-    int failed_values = 0;
+    std::size_t failed_values = 0;
 
     // loop over fine dofs and compare the computed values from the coarse function to the exact values from the fine function
-    for (int fine_i = 0; fine_i < fine_dofs_kernel; ++fine_i)
+    for (std::size_t dof = 0; dof < fine_from_coarse_host.size(); ++dof)
     {
-      const std::int32_t fine_node = fine_dofmap_host(test_cell, fine_i);
+      const T error = std::abs(fine_from_coarse_host[dof] - fine_exact_values[dof]);
+      max_error = std::max(max_error, error);
 
-      // loop over the 3 components of the vector field
-      for (int component = 0; component < 3; ++component)
-      {
-        const std::int32_t dof = 3 * fine_node + component;
-
-        const T computed = fine_from_coarse_host[dof];
-        const T exact = fine_exact_values[dof];
-        const T error = std::abs(computed - exact);
-
-        max_error = std::max(max_error, error);
-
-        if (error > tolerance){
-
-          failed_values++;
-          
-          std::cout << "local dof " << fine_i
-                    << ", component " << component
-                    << ", error = " << std::scientific
-                    << std::setprecision(3) << error << '\n';
-        }
-      }
+      if (error > tolerance) failed_values++;
     }
+
+    std::cout << std::scientific
+              << std::setprecision(3)
+              << "Maximum global prolongation error = "
+              << max_error << '\n';
+
+    std::cout << "Number of failed values = "
+              << failed_values << '\n';
 
     ///// for visualisation in PARAVIEW /////
     // dolfinx function to hold the prolonged values for visualisation
@@ -429,16 +418,11 @@ int main(int argc, char* argv[])
     
     u_fine->name = "direct_fine";
     u_prolonged->name = "prolonged_fine";
-    u_fine->x()->scatter_fwd();
-    u_prolonged->x()->scatter_fwd();
     
     #ifdef HAS_ADIOS2
     io::VTXWriter<U> transfer_writer(MPI_COMM_WORLD, "p_transfer.bp", {u_fine, u_prolonged}, "bp4");
     transfer_writer.write(0.0);
     #endif
-
-    std::cout << "Maximum prolongation error = " << max_error << "\n";
-    std::cout << "Number of failed values = " << failed_values << "\n";
   }
 
   MPI_Finalize();
