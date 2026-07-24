@@ -8,7 +8,11 @@ from dolfinx import fem, mesh, la
 from dolfinx.mesh import CellType, GhostMode, create_box, locate_entities_boundary
 
 from petsc4py import PETSc
-from dolfinx.fem.petsc import assemble_matrix as assemble_petsc_matrix
+from dolfinx.fem.petsc import (
+    assemble_matrix as assemble_petsc_matrix,
+    assemble_vector,
+    apply_lifting
+)
 
 dtype = np.float64 # float32 or float64
 
@@ -18,7 +22,7 @@ polynomial_order = 3 # 2 or 3 for P2 or P3 tetrahedra
 quadrature_degree = 2 * (polynomial_order - 1)
 jacobi = True # use Jacobi preconditioner in CG
 
-n = 1
+n = 10
 msh = create_box(
     MPI.COMM_WORLD,
     [np.array([0.0, 0.0, 0.0], dtype=dtype), 
@@ -86,26 +90,47 @@ def sigma(u):
 
 a = fem.form(ufl.inner(sigma(du), ufl.grad(v)) * dx, dtype=dtype)
 
-# interpolated u
-u = fem.Function(V, dtype=dtype)
+# # interpolated u
+# u = fem.Function(V, dtype=dtype)
 
-def u_expr(x):
-    values = np.zeros((gdim, x.shape[1]), dtype=dtype)
-    values[0] = x[0] * np.sin(np.pi * x[0]) * np.cos(np.pi * x[1]) # multiplying by x[0] to satisfy boundary conditions 
-    values[1] = x[0] * -np.cos(np.pi * x[0]) * np.sin(np.pi * x[1])
-    values[2] = 0.0
-    return values
+# def u_expr(x):
+#     values = np.zeros((gdim, x.shape[1]), dtype=dtype)
+#     values[0] = x[0] * np.sin(np.pi * x[0]) * np.cos(np.pi * x[1]) # multiplying by x[0] to satisfy boundary conditions 
+#     values[1] = x[0] * -np.cos(np.pi * x[0]) * np.sin(np.pi * x[1])
+#     values[2] = 0.0
+#     return values
 
-np.set_printoptions(precision=3, suppress=True, linewidth=200)
-u.interpolate(u_expr)
+# np.set_printoptions(precision=3, suppress=True, linewidth=200)
+# u.interpolate(u_expr)
 
+# A = assemble_petsc_matrix(a, bcs=[bc])
+# A.assemble()
+
+# b = fem.Function(V, dtype=dtype)
+# b.x.array[:] = 0.0
+
+# A.mult(u.x.petsc_vec, b.x.petsc_vec) # compute b = A * u_exact
+
+# constant downwards force
+body_force = fem.Constant(msh, np.array((0.0, 0.0, -1e-3), dtype=dtype))
+
+# load form
+L = fem.form(ufl.inner(body_force, v) * dx, dtype=dtype)
+
+# assemble elasticity matrix
 A = assemble_petsc_matrix(a, bcs=[bc])
 A.assemble()
 
-b = fem.Function(V, dtype=dtype)
-b.x.array[:] = 0.0
+# assemble force vector
+b = assemble_vector(L)
 
-A.mult(u.x.petsc_vec, b.x.petsc_vec) # compute b = A * u_exact
+# account for dirichlet boundary conditions
+apply_lifting(b, [a], bcs=[[bc]])
+
+b.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
+
+# set clamped dofs to zero in the vector
+bc.set(b.array)
 
 # 0 initial guess
 x = fem.Function(V, dtype=dtype)
@@ -119,10 +144,10 @@ solver.getPC().setType(PETSc.PC.Type.JACOBI if jacobi else PETSc.PC.Type.NONE)
 solver.setTolerances(rtol=1e-8, max_it=5000)
 solver.setInitialGuessNonzero(False)
 
-solver.solve(b.x.petsc_vec, x.x.petsc_vec)
+solver.solve(b, x.x.petsc_vec)
 x.x.scatter_forward() # update ghost values
 
-print("Exact u norm = ", u.x.petsc_vec.norm())
+# print("Exact u norm = ", u.x.petsc_vec.norm())
 print("Computed x norm = ", x.x.petsc_vec.norm())
-print("b norm = ", b.x.petsc_vec.norm())
+print("b norm = ", b.norm())
 print("number of iterations = ", solver.getIterationNumber())
