@@ -17,6 +17,7 @@
 #include <thrust/fill.h>
 #include <thrust/functional.h>
 #include <thrust/transform.h>
+#include <thrust/inner_product.h>
 
 #include "../../include/gpu_geometry.h"
 #include "elasticity.h"
@@ -319,6 +320,45 @@ int main(int argc, char* argv[])
     DeviceVector fine_from_coarse(V->dofmap()->index_map, 3);
     thrust::fill(thrust::device, fine_from_coarse.array().begin(), fine_from_coarse.array().end(), T(0));
 
+    // number of global fine nodes
+    const std::size_t num_fine_nodes = fine_from_coarse.array().size() / 3;
+
+    // fine-space cell dofmap on CPU
+    const auto fine_dofmap_host = V->dofmap()->map();
+
+    // for every global fine node, we need to store:
+    // 1. one mesh cell containing that fine node (the "owner" cell)
+    // 2. the local node number of the fine node within that mesh cell
+    std::vector<std::int32_t> owner_cell_host(num_fine_nodes, -1);
+    std::vector<std::int32_t> owner_local_host(num_fine_nodes, -1);
+
+    for (std::size_t cell = 0; cell < fine_dofmap_host.extent(0); ++cell)
+    {
+      for (int fine_i = 0; fine_i < fine_dofs_kernel; ++fine_i)
+      {
+        const std::int32_t fine_node = fine_dofmap_host(cell, fine_i);
+        // if this fine node has not yet been assigned an owner cell, assign it now
+        if (owner_cell_host[fine_node] == -1){
+          owner_cell_host[fine_node] = static_cast<std::int32_t>(cell);
+          owner_local_host[fine_node] = fine_i;
+        }
+      }
+    }
+
+    // check that every fine node recieved an owner
+    for (std::size_t fine_node = 0; fine_node < num_fine_nodes; ++fine_node){
+      const std::int32_t cell = owner_cell_host[fine_node];
+      const std::int32_t local = owner_local_host[fine_node];
+      if (cell == -1 || local == -1){
+        throw std::runtime_error("Fine node " + std::to_string(fine_node) + " has no owner cell");
+      }
+      if (fine_dofmap_host(cell, local) != static_cast<std::int32_t>(fine_node)){
+        throw std::runtime_error("Fine node " + std::to_string(fine_node) + " is not owned by cell " + std::to_string(cell) + " at local index " + std::to_string(local));
+      }
+    }
+
+    thrust::device_vector<std::int32_t> owner_cell_device(owner_cell_host.begin(), owner_cell_host.end());
+    thrust::device_vector<std::int32_t> owner_local_device(owner_local_host.begin(), owner_local_host.end());
 
     // Tabulate basis for element
     std::size_t nq = g_device.qpoints().size() / 3;
@@ -370,10 +410,7 @@ int main(int argc, char* argv[])
       cg_solver.set_diag_inverse(diagonal_inverse);
     }
 
-    const int num_iterations = cg_solver.solve(A, x_device, b_device, jacobi);
-
     device_synchronize();
-
 
     // timing 
     constexpr int runs = 5;
@@ -418,14 +455,13 @@ int main(int argc, char* argv[])
     std::cout << "b norm = "
               << dolfinx::la::norm(*b->x()) << "\n";
 
-    std::cout << "Number of iterations = "
-              << num_iterations << "\n";
-
-    // testing
+    // testing prolongation
     const std::size_t num_cells = V->dofmap()->map().extent(0);
     constexpr int transfer_threads = 256;
     const std::size_t total_transfer_tasks = num_cells * fine_dofs_kernel * 3;
     const std::size_t transfer_blocks = (total_transfer_tasks + transfer_threads - 1) / transfer_threads;
+
+    thrust::fill(thrust::device, fine_from_coarse.array().begin(), fine_from_coarse.array().end(), T(0));
 
     p_transfer::prolong_cells<T, coarse_dofs_kernel, fine_dofs_kernel><<<static_cast<int>(transfer_blocks), transfer_threads>>>(
       num_cells,
@@ -465,6 +501,39 @@ int main(int argc, char* argv[])
 
     std::cout << "Number of failed values = "
               << failed_values << '\n';
+
+    // testing restriction
+    DeviceVector coarse_restricted(V_coarse->dofmap()->index_map, 3);
+    thrust::fill(thrust::device, coarse_restricted.array().begin(), coarse_restricted.array().end(), T(0));
+
+    const std::size_t total_restrict_tasks = num_fine_nodes * 3;
+    const std::size_t restrict_blocks = (total_restrict_tasks + transfer_threads - 1) / transfer_threads;
+
+    p_transfer::restrict_nodes<T, coarse_dofs_kernel, fine_dofs_kernel><<<static_cast<int>(restrict_blocks), transfer_threads>>>(
+      num_fine_nodes,
+      P_device.data().get(),
+      gpu_dofmap_coarse.map().data().get(),
+      owner_cell_device.data().get(),
+      owner_local_device.data().get(),
+      fine_from_coarse.array().data().get(),
+      coarse_restricted.array().data().get()
+    );
+
+    device_synchronize();
+
+    const T left = thrust::inner_product(thrust::device, fine_from_coarse.array().begin(), fine_from_coarse.array().end(),
+      fine_from_coarse.array().begin(), T(0));
+    const T right = thrust::inner_product(thrust::device, coarse_device.array().begin(), coarse_device.array().end(),
+      coarse_restricted.array().begin(), T(0));
+
+    const T difference = std::abs(left - right);
+    const T scale = std::max(std::max(T(1), std::abs(left)), std::abs(right));
+    const T relative_error = difference / scale;
+
+    std::cout << std::setprecision(8);
+    std::cout << "(Px, Px) = " << left << "\n";
+    std::cout << "(x, P^T Px) = " << right << "\n";
+    std::cout << "Relative error = " << relative_error << "\n";
 
     ///// for visualisation in PARAVIEW /////
     // dolfinx function to hold the prolonged values for visualisation

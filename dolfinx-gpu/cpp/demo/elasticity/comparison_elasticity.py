@@ -4,7 +4,7 @@ import ufl
 import basix
 
 from basix.ufl import element
-from dolfinx import fem, mesh, la
+from dolfinx import fem, mesh, la, io
 from dolfinx.mesh import CellType, GhostMode, create_box, locate_entities_boundary
 
 from petsc4py import PETSc
@@ -146,6 +146,14 @@ solver.setInitialGuessNonzero(False)
 
 solver.solve(b, x.x.petsc_vec)
 x.x.scatter_forward() # update ghost values
+
+# name shown in paraview
+x.name = "displacement"
+
+# write solution to file
+writer = io.VTXWriter(msh.comm, "python_cantilever.bp", [x], "bp4")
+writer.write(0.0)
+writer.close()
 
 # print("Exact u norm = ", u.x.petsc_vec.norm())
 print("Computed x norm = ", x.x.petsc_vec.norm())
