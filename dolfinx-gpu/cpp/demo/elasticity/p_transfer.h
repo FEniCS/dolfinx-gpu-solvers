@@ -43,7 +43,8 @@ namespace p_transfer
         
         const std::int32_t fine_node = fine_dofmap[cell * fine_dofs + fine_i]; // global fine node
         const std::int32_t fine_dof = fine_node * 3 + component; // convert fine node into vector dof
-        fine_values[fine_dof] = value; // write the computed fine value to the output vector
+        // atomic exchange used to remove write race condition
+        atomicExch(&fine_values[fine_dof], value); // write the computed fine value to the output vector
     }
 
 

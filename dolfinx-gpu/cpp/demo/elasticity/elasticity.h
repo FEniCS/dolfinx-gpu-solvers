@@ -266,52 +266,66 @@ __global__ void elasticity_diagonal(
     atomicAdd(&diagonal[dof], cell_diagonal);
   }
 
-template <int P>
-struct elasticity_traits;
+  // // eventually could implement GPU kernel for right hand side, but for now we'll just use the CPU dolfinx version
+  // template <typename T, int nq, int dofs, int cells_per_block>
+  // __global__ void elasticity_body_force(
+  //   T* __restrict__ b,
+  //   const T* __restrict__ phi_data,
+  //   const T* __restrict__ wdetJ_entity,
+  //   const std::int32_t* __restrict__ cell_dofs,
+  //   const std::int32_t* __restrict__ cells,
+  //   int ncells,
+  //   const std::int8_t* __restrict__ bc_marker,
+  //   T force_x, T force_y, T force_z
+  // ){
+  // }
 
-template <>
-struct elasticity_traits<1>{
-  static constexpr int ndofs = 4; // number of scalar dofs per cell
-  static constexpr int quadrature_degree = 1; // quadrature degree for P1 tetrahedra
-  static constexpr int nq = 1;     // number of quadrature points per cell
-  #if defined(__HIP_PLATFORM_AMD__)
-    static constexpr int cells_per_block = 16;
-  #else
-    static constexpr int cells_per_block = 32; // number of cells per CUDA block
+  template <int P>
+  struct elasticity_traits;
+
+  template <>
+  struct elasticity_traits<1>{
+    static constexpr int ndofs = 4; // number of scalar dofs per cell
+    static constexpr int quadrature_degree = 1; // quadrature degree for P1 tetrahedra
+    static constexpr int nq = 1;     // number of quadrature points per cell
+    #if defined(__HIP_PLATFORM_AMD__)
+      static constexpr int cells_per_block = 16;
+    #else
+      static constexpr int cells_per_block = 32; // number of cells per CUDA block
+      #endif
+  };
+
+  template <>
+  struct elasticity_traits<2>{
+    static constexpr int ndofs = 10; // number of scalar dofs per cell
+    static constexpr int quadrature_degree = 2; // quadrature degree for P2 tetrahedra
+    static constexpr int nq = 4;     // number of quadrature points per cell
+    #if defined(__HIP_PLATFORM_AMD__)
+      static constexpr int cells_per_block = 16;
+    #else
+      static constexpr int cells_per_block = 32; // number of cells per CUDA block
+      #endif
+  };
+
+  template <>
+  struct elasticity_traits<3>{
+    static constexpr int ndofs = 20; // number of scalar dofs per cell
+    static constexpr int quadrature_degree = 4; // quadrature degree for P3 tetrahedra
+    static constexpr int nq = 14;     // number of quadrature points per cell
+    #if defined(__HIP_PLATFORM_AMD__)
+      static constexpr int cells_per_block = 8;
+    #else
+      static constexpr int cells_per_block = 16; // number of cells per CUDA block
     #endif
-};
+  };
 
-template <>
-struct elasticity_traits<2>{
-  static constexpr int ndofs = 10; // number of scalar dofs per cell
-  static constexpr int quadrature_degree = 2; // quadrature degree for P2 tetrahedra
-  static constexpr int nq = 4;     // number of quadrature points per cell
-  #if defined(__HIP_PLATFORM_AMD__)
-    static constexpr int cells_per_block = 16;
-  #else
-    static constexpr int cells_per_block = 32; // number of cells per CUDA block
-    #endif
-};
-
-template <>
-struct elasticity_traits<3>{
-  static constexpr int ndofs = 20; // number of scalar dofs per cell
-  static constexpr int quadrature_degree = 4; // quadrature degree for P3 tetrahedra
-  static constexpr int nq = 14;     // number of quadrature points per cell
-  #if defined(__HIP_PLATFORM_AMD__)
-    static constexpr int cells_per_block = 8;
-  #else
-    static constexpr int cells_per_block = 16; // number of cells per CUDA block
-  #endif
-};
-
-template <typename T>
-__global__ void set_identity_rows(T* output, const T* input, const std::int8_t* bc_marker, std::size_t size){
-  const std::size_t i = blockIdx.x * blockDim.x + threadIdx.x;
-  if (i < size and bc_marker[i]){
-    output[i] = input[i]; // set the value to the input if it is clamped
-}
-}
+  template <typename T>
+  __global__ void set_identity_rows(T* output, const T* input, const std::int8_t* bc_marker, std::size_t size){
+    const std::size_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < size and bc_marker[i]){
+      output[i] = input[i]; // set the value to the input if it is clamped
+    }
+  }
 } // namespace detail
 
 

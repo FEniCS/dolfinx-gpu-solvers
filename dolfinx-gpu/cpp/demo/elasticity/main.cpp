@@ -32,15 +32,15 @@
 
 using namespace dolfinx;
 namespace po = boost::program_options;
+
 using T = double; // float or double
 using U = dolfinx::scalar_value_t<T>;
 
 constexpr int polynomial_order = 3; // 2 or 3 for P2 or P3 tetrahedra
 constexpr int quadrature_degree = detail::elasticity_traits<polynomial_order>::quadrature_degree;
+constexpr int coarse_order = polynomial_order - 1;
 constexpr bool jacobi = true; // use Jacobi preconditioner in CG
 
-static_assert(polynomial_order >= 2, "Transfer requires a lower-order level");
-constexpr int coarse_order = polynomial_order - 1;
 
 template <typename ContainerI>
 class GPUDofMap
@@ -87,6 +87,7 @@ private:
   std::array<std::size_t, 2> _shape;
   std::shared_ptr<const dolfinx::common::IndexMap> _im;
 };
+
 
 template <typename Scalar>
 struct invert_jacobi_diagonal{
@@ -278,88 +279,6 @@ int main(int argc, char* argv[])
     la::Vector<T, thrust::device_vector<T>> b_device(*(b->x()));
     using DeviceVector = decltype(b_device);
 
-    // test functions for interpolation from coarse to fine function space
-    auto test_field = [](auto x)
-        -> std::pair<std::vector<T>, std::vector<std::size_t>>
-    {
-      const std::size_t np = x.extent(1);
-      std::vector<T> vals(3 * np, T(0));
-
-      for (std::size_t p = 0; p < np; ++p)
-      {
-        const T X = x(0, p);
-        const T Y = x(1, p);
-        const T Z = x(2, p);
-
-        if constexpr (polynomial_order == 2)
-        {
-          // P1 to P2 with a linear field
-          vals[p]          = X;
-          vals[np + p]     = Y;
-          vals[2 * np + p] = Z;
-        }
-        else if constexpr (polynomial_order == 3)
-        {
-          // P2 to P3 test with a quadratic field
-          vals[p]          = X * X + Y * Z;
-          vals[np + p]     = Y * Y + X * Z;
-          vals[2 * np + p] = Z * Z + X * Y;
-        }
-      }
-
-      return {vals, {3, np}};
-    };    
-    
-
-    auto u_coarse = std::make_shared<fem::Function<T>>(V_coarse);
-    auto u_fine = std::make_shared<fem::Function<T>>(V);
-    u_coarse->interpolate(test_field);
-    u_fine->interpolate(test_field);
-
-    la::Vector<T, thrust::device_vector<T>> coarse_device(*(u_coarse->x()));
-    DeviceVector fine_from_coarse(V->dofmap()->index_map, 3);
-    thrust::fill(thrust::device, fine_from_coarse.array().begin(), fine_from_coarse.array().end(), T(0));
-
-    // number of global fine nodes
-    const std::size_t num_fine_nodes = fine_from_coarse.array().size() / 3;
-
-    // fine-space cell dofmap on CPU
-    const auto fine_dofmap_host = V->dofmap()->map();
-
-    // for every global fine node, we need to store:
-    // 1. one mesh cell containing that fine node (the "owner" cell)
-    // 2. the local node number of the fine node within that mesh cell
-    std::vector<std::int32_t> owner_cell_host(num_fine_nodes, -1);
-    std::vector<std::int32_t> owner_local_host(num_fine_nodes, -1);
-
-    for (std::size_t cell = 0; cell < fine_dofmap_host.extent(0); ++cell)
-    {
-      for (int fine_i = 0; fine_i < fine_dofs_kernel; ++fine_i)
-      {
-        const std::int32_t fine_node = fine_dofmap_host(cell, fine_i);
-        // if this fine node has not yet been assigned an owner cell, assign it now
-        if (owner_cell_host[fine_node] == -1){
-          owner_cell_host[fine_node] = static_cast<std::int32_t>(cell);
-          owner_local_host[fine_node] = fine_i;
-        }
-      }
-    }
-
-    // check that every fine node recieved an owner
-    for (std::size_t fine_node = 0; fine_node < num_fine_nodes; ++fine_node){
-      const std::int32_t cell = owner_cell_host[fine_node];
-      const std::int32_t local = owner_local_host[fine_node];
-      if (cell == -1 || local == -1){
-        throw std::runtime_error("Fine node " + std::to_string(fine_node) + " has no owner cell");
-      }
-      if (fine_dofmap_host(cell, local) != static_cast<std::int32_t>(fine_node)){
-        throw std::runtime_error("Fine node " + std::to_string(fine_node) + " is not owned by cell " + std::to_string(cell) + " at local index " + std::to_string(local));
-      }
-    }
-
-    thrust::device_vector<std::int32_t> owner_cell_device(owner_cell_host.begin(), owner_cell_host.end());
-    thrust::device_vector<std::int32_t> owner_local_device(owner_local_host.begin(), owner_local_host.end());
-
     // Tabulate basis for element
     std::size_t nq = g_device.qpoints().size() / 3;
     auto shape = elem.tabulate_shape(1, nq);
@@ -455,7 +374,91 @@ int main(int argc, char* argv[])
     std::cout << "b norm = "
               << dolfinx::la::norm(*b->x()) << "\n";
 
-    // testing prolongation
+              
+    // test functions for interpolation from coarse to fine function space
+    auto test_field = [](auto x)
+        -> std::pair<std::vector<T>, std::vector<std::size_t>>
+    {
+      const std::size_t np = x.extent(1);
+      std::vector<T> vals(3 * np, T(0));
+
+      for (std::size_t p = 0; p < np; ++p)
+      {
+        const T X = x(0, p);
+        const T Y = x(1, p);
+        const T Z = x(2, p);
+
+        if constexpr (polynomial_order == 2)
+        {
+          // P1 to P2 with a linear field
+          vals[p]          = X;
+          vals[np + p]     = Y;
+          vals[2 * np + p] = Z;
+        }
+        else if constexpr (polynomial_order == 3)
+        {
+          // P2 to P3 test with a quadratic field
+          vals[p]          = X * X + Y * Z;
+          vals[np + p]     = Y * Y + X * Z;
+          vals[2 * np + p] = Z * Z + X * Y;
+        }
+      }
+
+      return {vals, {3, np}};
+    };    
+    
+
+    auto u_coarse = std::make_shared<fem::Function<T>>(V_coarse);
+    auto u_fine = std::make_shared<fem::Function<T>>(V);
+    u_coarse->interpolate(test_field);
+    u_fine->interpolate(test_field);
+
+    la::Vector<T, thrust::device_vector<T>> coarse_device(*(u_coarse->x()));
+    DeviceVector fine_from_coarse(V->dofmap()->index_map, 3);
+    thrust::fill(thrust::device, fine_from_coarse.array().begin(), fine_from_coarse.array().end(), T(0));
+
+    // number of global fine nodes
+    const std::size_t num_fine_nodes = fine_from_coarse.array().size() / 3;
+
+    // fine-space cell dofmap on CPU
+    const auto fine_dofmap_host = V->dofmap()->map();
+
+    // for every global fine node, we need to store:
+    // 1. one mesh cell containing that fine node (the "owner" cell)
+    // 2. the local node number of the fine node within that mesh cell
+    std::vector<std::int32_t> owner_cell_host(num_fine_nodes, -1);
+    std::vector<std::int32_t> owner_local_host(num_fine_nodes, -1);
+
+    for (std::size_t cell = 0; cell < fine_dofmap_host.extent(0); ++cell)
+    {
+      for (int fine_i = 0; fine_i < fine_dofs_kernel; ++fine_i)
+      {
+        const std::int32_t fine_node = fine_dofmap_host(cell, fine_i);
+        // if this fine node has not yet been assigned an owner cell, assign it now
+        if (owner_cell_host[fine_node] == -1){
+          owner_cell_host[fine_node] = static_cast<std::int32_t>(cell);
+          owner_local_host[fine_node] = fine_i;
+        }
+      }
+    }
+
+    // check that every fine node recieved an owner
+    for (std::size_t fine_node = 0; fine_node < num_fine_nodes; ++fine_node){
+      const std::int32_t cell = owner_cell_host[fine_node];
+      const std::int32_t local = owner_local_host[fine_node];
+      if (cell == -1 || local == -1){
+        throw std::runtime_error("Fine node " + std::to_string(fine_node) + " has no owner cell");
+      }
+      if (fine_dofmap_host(cell, local) != static_cast<std::int32_t>(fine_node)){
+        throw std::runtime_error("Fine node " + std::to_string(fine_node) + " is not owned by cell " + std::to_string(cell) + " at local index " + std::to_string(local));
+      }
+    }
+
+    thrust::device_vector<std::int32_t> owner_cell_device(owner_cell_host.begin(), owner_cell_host.end());
+    thrust::device_vector<std::int32_t> owner_local_device(owner_local_host.begin(), owner_local_host.end());
+
+
+    // testing prolongation //
     const std::size_t num_cells = V->dofmap()->map().extent(0);
     constexpr int transfer_threads = 256;
     const std::size_t total_transfer_tasks = num_cells * fine_dofs_kernel * 3;
@@ -502,7 +505,8 @@ int main(int argc, char* argv[])
     std::cout << "Number of failed values = "
               << failed_values << '\n';
 
-    // testing restriction
+
+    // testing restriction //
     DeviceVector coarse_restricted(V_coarse->dofmap()->index_map, 3);
     thrust::fill(thrust::device, coarse_restricted.array().begin(), coarse_restricted.array().end(), T(0));
 
