@@ -39,7 +39,7 @@ using U = dolfinx::scalar_value_t<T>;
 constexpr int polynomial_order = 3; // 2 or 3 for P2 or P3 tetrahedra
 constexpr int quadrature_degree = detail::elasticity_traits<polynomial_order>::quadrature_degree;
 constexpr int coarse_order = polynomial_order - 1;
-constexpr bool jacobi = true; // use Jacobi preconditioner in CG
+constexpr bool jacobi_cg = true; // use Jacobi preconditioner in CG
 
 
 template <typename ContainerI>
@@ -97,6 +97,93 @@ struct invert_jacobi_diagonal{
     else
       return Scalar(1) / diagonal; // invert the diagonal value
   }
+};
+
+
+// Jacobi smoother
+// one weighted jacobi step: x = x + omega * D^{-1} * (b - Ax)
+template <typename Vector, typename Operator>
+void jacobi_smooth(
+  Operator& A,
+  Vector& x,
+  const Vector& b,
+  const Vector& diagonal_inverse,
+  Vector& Ax,
+  Vector& residual,
+  int num_steps,
+  typename Vector::value_type omega)
+{
+  using Scalar = typename Vector::value_type;
+
+  for (int step = 0; step < num_steps; ++step){
+    A(Ax, x); // compute Ax
+
+    // compute residual = b - Ax
+    thrust::transform(
+      thrust::device,
+      b.array().begin(),
+      b.array().end(),
+      Ax.array().begin(),
+      residual.array().begin(),
+      thrust::minus<Scalar>()
+    );
+
+    // multiply residual by inverse diagonal
+    thrust::transform(
+      thrust::device,
+      residual.array().begin(),
+      residual.array().end(),
+      diagonal_inverse.array().begin(),
+      residual.array().begin(),
+      thrust::multiplies<Scalar>()
+    );
+
+    // add result to x with damping factor omega
+    thrust::transform(
+      thrust::device,
+      residual.array().begin(),
+      residual.array().end(),
+      x.array().begin(),
+      x.array().begin(),
+      elasticity::axpyOperation<Scalar>{omega}
+    );
+  }
+};
+
+
+// residual norm helper function
+template <typename Vector, typename Operator>
+typename Vector::value_type residual_norm(
+  Operator& A,
+  const Vector& x,
+  const Vector& b,
+  Vector& Ax,
+  Vector& residual)
+{
+  using Scalar = typename Vector::value_type;
+
+  A(Ax, x); // compute Ax
+
+  // compute residual = b - Ax
+  thrust::transform(
+    thrust::device,
+    b.array().begin(),
+    b.array().end(),
+    Ax.array().begin(),
+    residual.array().begin(),
+    thrust::minus<Scalar>()
+  );
+
+  // compute norm of residual
+  const Scalar norm_squared = thrust::inner_product(
+    thrust::device,
+    residual.array().begin(),
+    residual.array().end(),
+    residual.array().begin(),
+    Scalar(0)
+  );
+
+  return std::sqrt(norm_squared);
 };
 
 
@@ -189,9 +276,9 @@ int main(int argc, char* argv[])
       throw std::runtime_error("Unexpected interpolation matrix dimensions");
     }
 
-    std::cout << "Interpolation matrix shape = "
-              << P_shape[0] << " x "
-              << P_shape[1] << "\n";
+    // std::cout << "Interpolation matrix shape = "
+    //           << P_shape[0] << " x "
+    //           << P_shape[1] << "\n";
 
     // copy interpolation matrix to GPU
     thrust::device_vector<T> P_device(P_host.begin(), P_host.end());
@@ -311,28 +398,48 @@ int main(int argc, char* argv[])
 
     // create CG solver
     elasticity::CGSolver<DeviceVector> cg_solver(V->dofmap()->index_map, 3);
-    cg_solver.set_max_iterations(5000);
+    cg_solver.set_max_iterations(2000);
     cg_solver.set_tolerance(T(1e-8));
 
-    if (jacobi){
-      DeviceVector diagonal_inverse(V->dofmap()->index_map, 3);
-      thrust::fill(thrust::device, diagonal_inverse.array().begin(), diagonal_inverse.array().end(), T(0));
-      
-      assemble_elasticity_diagonal<polynomial_order>(diagonal_inverse, phi_data, K, wdetJ,
-        gpu_dofmap.map(), cell_list, bc_marker_device);
-      
-      // convert diag(A) to diag(A)^{-1}
-      thrust::transform(thrust::device, diagonal_inverse.array().begin(), diagonal_inverse.array().end(),
-        bc_marker_device.begin(), diagonal_inverse.array().begin(), invert_jacobi_diagonal<T>());
+    DeviceVector diagonal_inverse(V->dofmap()->index_map, 3);
+    thrust::fill(thrust::device, diagonal_inverse.array().begin(), diagonal_inverse.array().end(), T(0));
+    
+    assemble_elasticity_diagonal<polynomial_order>(diagonal_inverse, phi_data, K, wdetJ,
+      gpu_dofmap.map(), cell_list, bc_marker_device);
+    
+    // convert diag(A) to diag(A)^{-1}
+    thrust::transform(thrust::device, diagonal_inverse.array().begin(), diagonal_inverse.array().end(),
+      bc_marker_device.begin(), diagonal_inverse.array().begin(), invert_jacobi_diagonal<T>());
 
+    if (jacobi_cg){
       // copy diag(A)^{-1} to CG solver
       cg_solver.set_diag_inverse(diagonal_inverse);
     }
 
     device_synchronize();
 
+
+    // testing jacobi smoother
+    DeviceVector x_smoother_test(V->dofmap()->index_map, 3);
+    DeviceVector fine_Ax(V->dofmap()->index_map, 3);
+    DeviceVector fine_residual(V->dofmap()->index_map, 3);
+
+    thrust::fill(thrust::device, x_smoother_test.array().begin(), x_smoother_test.array().end(), T(0));
+
+    const T residual_before = residual_norm(A, x_smoother_test, b_device, fine_Ax, fine_residual);
+    std::cout << "Residual norm before Jacobi smoothing = " << residual_before << "\n";
+
+    constexpr int jacobi_steps = 1;
+    constexpr T omega = T(0.3);
+
+    jacobi_smooth(A, x_smoother_test, b_device, diagonal_inverse, fine_Ax, fine_residual, jacobi_steps, omega);
+
+    const T residual_after = residual_norm(A, x_smoother_test, b_device, fine_Ax, fine_residual);
+    std::cout << "Residual norm after Jacobi smoothing = " << residual_after << "\n";
+
+
     // timing 
-    constexpr int runs = 5;
+    constexpr int runs = 1;
     std::vector<double> times;
     times.reserve(runs);
 
@@ -344,7 +451,7 @@ int main(int argc, char* argv[])
 
       const auto start = std::chrono::high_resolution_clock::now();
 
-      iterations = cg_solver.solve(A, x_device, b_device, jacobi);
+      iterations = cg_solver.solve(A, x_device, b_device, jacobi_cg);
       device_synchronize();
 
       const auto end = std::chrono::high_resolution_clock::now();
@@ -458,108 +565,108 @@ int main(int argc, char* argv[])
     thrust::device_vector<std::int32_t> owner_local_device(owner_local_host.begin(), owner_local_host.end());
 
 
-    // testing prolongation //
-    const std::size_t num_cells = V->dofmap()->map().extent(0);
-    constexpr int transfer_threads = 256;
-    const std::size_t total_transfer_tasks = num_cells * fine_dofs_kernel * 3;
-    const std::size_t transfer_blocks = (total_transfer_tasks + transfer_threads - 1) / transfer_threads;
+    // // testing prolongation //
+    // const std::size_t num_cells = V->dofmap()->map().extent(0);
+    // constexpr int transfer_threads = 256;
+    // const std::size_t total_transfer_tasks = num_cells * fine_dofs_kernel * 3;
+    // const std::size_t transfer_blocks = (total_transfer_tasks + transfer_threads - 1) / transfer_threads;
 
-    thrust::fill(thrust::device, fine_from_coarse.array().begin(), fine_from_coarse.array().end(), T(0));
+    // thrust::fill(thrust::device, fine_from_coarse.array().begin(), fine_from_coarse.array().end(), T(0));
 
-    p_transfer::prolong_cells<T, coarse_dofs_kernel, fine_dofs_kernel><<<static_cast<int>(transfer_blocks), transfer_threads>>>(
-      num_cells,
-      P_device.data().get(),
-      gpu_dofmap_coarse.map().data().get(),
-      gpu_dofmap.map().data().get(),
-      coarse_device.array().data().get(),
-      fine_from_coarse.array().data().get()
-    );
+    // p_transfer::prolong_cells<T, coarse_dofs_kernel, fine_dofs_kernel><<<static_cast<int>(transfer_blocks), transfer_threads>>>(
+    //   num_cells,
+    //   P_device.data().get(),
+    //   gpu_dofmap_coarse.map().data().get(),
+    //   gpu_dofmap.map().data().get(),
+    //   coarse_device.array().data().get(),
+    //   fine_from_coarse.array().data().get()
+    // );
 
-    device_synchronize();
+    // device_synchronize();
 
-    // get the exact values of the fine function
-    const auto fine_exact_values = u_fine->x()->array();
+    // // get the exact values of the fine function
+    // const auto fine_exact_values = u_fine->x()->array();
 
-    // copy the GPU result to host for comparison
-    std::vector<T> fine_from_coarse_host(fine_from_coarse.array().size());
-    thrust::copy(fine_from_coarse.array().begin(), fine_from_coarse.array().end(), fine_from_coarse_host.begin());
+    // // copy the GPU result to host for comparison
+    // std::vector<T> fine_from_coarse_host(fine_from_coarse.array().size());
+    // thrust::copy(fine_from_coarse.array().begin(), fine_from_coarse.array().end(), fine_from_coarse_host.begin());
 
-    constexpr T tolerance = T(1e-12);
-    T max_error = T(0);
-    std::size_t failed_values = 0;
+    // constexpr T tolerance = T(1e-12);
+    // T max_error = T(0);
+    // std::size_t failed_values = 0;
 
-    // loop over fine dofs and compare the computed values from the coarse function to the exact values from the fine function
-    for (std::size_t dof = 0; dof < fine_from_coarse_host.size(); ++dof)
-    {
-      const T error = std::abs(fine_from_coarse_host[dof] - fine_exact_values[dof]);
-      max_error = std::max(max_error, error);
+    // // loop over fine dofs and compare the computed values from the coarse function to the exact values from the fine function
+    // for (std::size_t dof = 0; dof < fine_from_coarse_host.size(); ++dof)
+    // {
+    //   const T error = std::abs(fine_from_coarse_host[dof] - fine_exact_values[dof]);
+    //   max_error = std::max(max_error, error);
 
-      if (error > tolerance) failed_values++;
-    }
+    //   if (error > tolerance) failed_values++;
+    // }
 
-    std::cout << std::scientific
-              << std::setprecision(3)
-              << "Maximum global prolongation error = "
-              << max_error << '\n';
+    // std::cout << std::scientific
+    //           << std::setprecision(3)
+    //           << "Maximum global prolongation error = "
+    //           << max_error << '\n';
 
-    std::cout << "Number of failed values = "
-              << failed_values << '\n';
+    // std::cout << "Number of failed values = "
+    //           << failed_values << '\n';
 
 
-    // testing restriction //
-    DeviceVector coarse_restricted(V_coarse->dofmap()->index_map, 3);
-    thrust::fill(thrust::device, coarse_restricted.array().begin(), coarse_restricted.array().end(), T(0));
+    // // testing restriction //
+    // DeviceVector coarse_restricted(V_coarse->dofmap()->index_map, 3);
+    // thrust::fill(thrust::device, coarse_restricted.array().begin(), coarse_restricted.array().end(), T(0));
 
-    const std::size_t total_restrict_tasks = num_fine_nodes * 3;
-    const std::size_t restrict_blocks = (total_restrict_tasks + transfer_threads - 1) / transfer_threads;
+    // const std::size_t total_restrict_tasks = num_fine_nodes * 3;
+    // const std::size_t restrict_blocks = (total_restrict_tasks + transfer_threads - 1) / transfer_threads;
 
-    p_transfer::restrict_nodes<T, coarse_dofs_kernel, fine_dofs_kernel><<<static_cast<int>(restrict_blocks), transfer_threads>>>(
-      num_fine_nodes,
-      P_device.data().get(),
-      gpu_dofmap_coarse.map().data().get(),
-      owner_cell_device.data().get(),
-      owner_local_device.data().get(),
-      fine_from_coarse.array().data().get(),
-      coarse_restricted.array().data().get()
-    );
+    // p_transfer::restrict_nodes<T, coarse_dofs_kernel, fine_dofs_kernel><<<static_cast<int>(restrict_blocks), transfer_threads>>>(
+    //   num_fine_nodes,
+    //   P_device.data().get(),
+    //   gpu_dofmap_coarse.map().data().get(),
+    //   owner_cell_device.data().get(),
+    //   owner_local_device.data().get(),
+    //   fine_from_coarse.array().data().get(),
+    //   coarse_restricted.array().data().get()
+    // );
 
-    device_synchronize();
+    // device_synchronize();
 
-    const T left = thrust::inner_product(thrust::device, fine_from_coarse.array().begin(), fine_from_coarse.array().end(),
-      fine_from_coarse.array().begin(), T(0));
-    const T right = thrust::inner_product(thrust::device, coarse_device.array().begin(), coarse_device.array().end(),
-      coarse_restricted.array().begin(), T(0));
+    // const T left = thrust::inner_product(thrust::device, fine_from_coarse.array().begin(), fine_from_coarse.array().end(),
+    //   fine_from_coarse.array().begin(), T(0));
+    // const T right = thrust::inner_product(thrust::device, coarse_device.array().begin(), coarse_device.array().end(),
+    //   coarse_restricted.array().begin(), T(0));
 
-    const T difference = std::abs(left - right);
-    const T scale = std::max(std::max(T(1), std::abs(left)), std::abs(right));
-    const T relative_error = difference / scale;
+    // const T difference = std::abs(left - right);
+    // const T scale = std::max(std::max(T(1), std::abs(left)), std::abs(right));
+    // const T relative_error = difference / scale;
 
-    std::cout << std::setprecision(8);
-    std::cout << "(Px, Px) = " << left << "\n";
-    std::cout << "(x, P^T Px) = " << right << "\n";
-    std::cout << "Relative error = " << relative_error << "\n";
+    // std::cout << std::setprecision(8);
+    // std::cout << "(Px, Px) = " << left << "\n";
+    // std::cout << "(x, P^T Px) = " << right << "\n";
+    // std::cout << "Relative error = " << relative_error << "\n";
 
-    ///// for visualisation in PARAVIEW /////
-    // dolfinx function to hold the prolonged values for visualisation
-    auto u_prolonged = std::make_shared<fem::Function<T>>(V);
-    // copy GPU result into dolfinx function
-    std::copy(fine_from_coarse_host.begin(), fine_from_coarse_host.end(), u_prolonged->x()->array().begin());
+    // ///// for visualisation in PARAVIEW /////
+    // // dolfinx function to hold the prolonged values for visualisation
+    // auto u_prolonged = std::make_shared<fem::Function<T>>(V);
+    // // copy GPU result into dolfinx function
+    // std::copy(fine_from_coarse_host.begin(), fine_from_coarse_host.end(), u_prolonged->x()->array().begin());
     
-    u_fine->name = "direct_fine";
-    u_prolonged->name = "prolonged_fine";
+    // u_fine->name = "direct_fine";
+    // u_prolonged->name = "prolonged_fine";
     
-    #ifdef HAS_ADIOS2
-    io::VTXWriter<U> transfer_writer(MPI_COMM_WORLD, "p_transfer.bp", {u_fine, u_prolonged}, "bp4");
-    transfer_writer.write(0.0);
-    #endif
+    // #ifdef HAS_ADIOS2
+    // io::VTXWriter<U> transfer_writer(MPI_COMM_WORLD, "p_transfer.bp", {u_fine, u_prolonged}, "bp4");
+    // transfer_writer.write(0.0);
+    // #endif
 
-    x->name = "displacement";
+    // x->name = "displacement";
 
-    #ifdef HAS_ADIOS2
-    io::VTXWriter<U> solution_writer(MPI_COMM_WORLD, "cantilever.bp", {x}, "bp4");
+    // #ifdef HAS_ADIOS2
+    // io::VTXWriter<U> solution_writer(MPI_COMM_WORLD, "cantilever.bp", {x}, "bp4");
 
-    solution_writer.write(0.0);
-    #endif
+    // solution_writer.write(0.0);
+    // #endif
   }
 
   MPI_Finalize();
