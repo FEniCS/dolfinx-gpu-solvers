@@ -429,13 +429,13 @@ int main(int argc, char* argv[])
     // COARSE
     // Tabulate basis for element
     std::size_t nq_coarse = g_device_coarse.qpoints().size() / 3;
-    auto shape_coarse = elem.tabulate_shape(1, nq_coarse);
+    auto shape_coarse = elem_coarse.tabulate_shape(1, nq_coarse);
     std::vector<T> table_coarse(
         std::accumulate(shape_coarse.begin(), shape_coarse.end(), 1, std::multiplies<int>()));
     std::vector<T> qpoints_coarse(g_device_coarse.qpoints().size());
     thrust::copy(g_device_coarse.qpoints().begin(), g_device_coarse.qpoints().end(),
                  qpoints_coarse.begin());
-    elem.tabulate(1, std::span(qpoints_coarse), {nq_coarse, 3}, std::span(table_coarse));
+    elem_coarse.tabulate(1, std::span(qpoints_coarse), {nq_coarse, 3}, std::span(table_coarse));
     assert(shape_coarse.size() == 4);
     assert(shape_coarse[0] == 4);
     assert(shape_coarse[1] == nq_coarse);
