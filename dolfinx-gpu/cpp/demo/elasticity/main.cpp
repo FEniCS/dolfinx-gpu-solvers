@@ -39,6 +39,7 @@ using U = dolfinx::scalar_value_t<T>;
 constexpr int polynomial_order = 3; // 2 or 3 for P2 or P3 tetrahedra
 constexpr int quadrature_degree = detail::elasticity_traits<polynomial_order>::quadrature_degree;
 constexpr int coarse_order = polynomial_order - 1;
+constexpr int coarse_quadrature_degree = detail::elasticity_traits<coarse_order>::quadrature_degree;
 constexpr bool jacobi_cg = true; // use Jacobi preconditioner in CG
 
 
@@ -220,6 +221,8 @@ int main(int argc, char* argv[])
     thrust::device_vector<std::int32_t> cell_list(cell_list_0.begin(),
                                                   cell_list_0.end());
 
+
+    // FINE geometry data
     // contruct geometry data using quadrature degree
     GPUGeometry<thrust::device_vector<U>, thrust::device_vector<std::int32_t>>
         g_device(mesh->geometry(), quadrature_degree);
@@ -231,6 +234,21 @@ int main(int argc, char* argv[])
     thrust::device_vector<T> K(cell_list.size() * 9
                                * g_device.qpoints().size());
     g_device.compute_K9(K, wdetJ, cell_list);
+
+
+    // COARSE geometry data with lower order quadrature
+    // contruct geometry data using quadrature degree
+    GPUGeometry<thrust::device_vector<U>, thrust::device_vector<std::int32_t>>
+        g_device_coarse(mesh->geometry(), coarse_quadrature_degree);
+    // detJ must be computed first: compute_K9 reuses it (via wdetJ) to
+    // normalize K = J^{-T} instead of re-deriving detJ itself.
+    thrust::device_vector<T> wdetJ_coarse(cell_list.size()
+                                   * g_device_coarse.qpoints().size());
+    g_device_coarse.compute_detJ(wdetJ_coarse, cell_list);
+    thrust::device_vector<T> K_coarse(cell_list.size() * 9
+                               * g_device_coarse.qpoints().size());
+    g_device_coarse.compute_K9(K_coarse, wdetJ_coarse, cell_list);
+
 
     // -----------------------------------------------------------------------
     // Finite element space
@@ -302,6 +320,8 @@ int main(int argc, char* argv[])
       return marker;
     };
 
+
+    // FINE boundary condition marker
     // find the clamped nodes
     std::vector<std::int32_t> bc_nodes = fem::locate_dofs_geometrical(*V, left_boundary); // in function space V, locate the dofs that are on the boundary
     // find how many nodes there are
@@ -318,8 +338,29 @@ int main(int argc, char* argv[])
 
     // copy markers to GPU
     thrust::device_vector<std::int8_t> bc_marker_device(bc_marker_host.begin(), bc_marker_host.end());
-    std::cout << "Number of clamped nodes = " << bc_nodes.size() << "\n";
-    std::cout << "Number of dofs = " << num_dofs << "\n";
+    // std::cout << "Number of clamped nodes = " << bc_nodes.size() << "\n";
+    // std::cout << "Number of dofs = " << num_dofs << "\n";
+
+
+    // COARSE boundary condition marker
+    // find the clamped nodes
+    std::vector<std::int32_t> bc_nodes_coarse = fem::locate_dofs_geometrical(*V_coarse, left_boundary); // in function space V_coarse, locate the dofs that are on the boundary
+    // find how many nodes there are
+    auto coarse_size_function = std::make_shared<fem::Function<T>>(V_coarse);
+    std::size_t num_dofs_coarse = coarse_size_function->x()->array().size(); // number of scalar entries stored in u
+    std::vector<std::int8_t> bc_marker_coarse_host(num_dofs_coarse, false); // create a list of bools for each node
+    
+    for (std::int32_t node : bc_nodes_coarse) // loop over all the clamped nodes
+    {
+      // mark the clamped nodes as true
+      bc_marker_coarse_host[3 *node + 0] = true;
+      bc_marker_coarse_host[3 *node + 1] = true;
+      bc_marker_coarse_host[3 *node + 2] = true;
+    }
+
+    // copy markers to GPU
+    thrust::device_vector<std::int8_t> bc_marker_coarse_device(bc_marker_coarse_host.begin(), bc_marker_coarse_host.end());    
+
 
     // const force [0 0 -0.001]
     auto body_force = std::make_shared<fem::Constant<T>>(std::array<T, 3>{T(0), T(0), T(-1e-3)});
@@ -366,6 +407,8 @@ int main(int argc, char* argv[])
     la::Vector<T, thrust::device_vector<T>> b_device(*(b->x()));
     using DeviceVector = decltype(b_device);
 
+
+    // FINE 
     // Tabulate basis for element
     std::size_t nq = g_device.qpoints().size() / 3;
     auto shape = elem.tabulate_shape(1, nq);
@@ -382,12 +425,60 @@ int main(int argc, char* argv[])
     assert(shape[3] == 1);
     thrust::device_vector<T> phi_data(table.begin(), table.end());
 
+
+    // COARSE
+    // Tabulate basis for element
+    std::size_t nq_coarse = g_device_coarse.qpoints().size() / 3;
+    auto shape_coarse = elem.tabulate_shape(1, nq_coarse);
+    std::vector<T> table_coarse(
+        std::accumulate(shape_coarse.begin(), shape_coarse.end(), 1, std::multiplies<int>()));
+    std::vector<T> qpoints_coarse(g_device_coarse.qpoints().size());
+    thrust::copy(g_device_coarse.qpoints().begin(), g_device_coarse.qpoints().end(),
+                 qpoints_coarse.begin());
+    elem.tabulate(1, std::span(qpoints_coarse), {nq_coarse, 3}, std::span(table_coarse));
+    assert(shape_coarse.size() == 4);
+    assert(shape_coarse[0] == 4);
+    assert(shape_coarse[1] == nq_coarse);
+    int ndofs_coarse = shape_coarse[2];
+    assert(shape_coarse[3] == 1);
+    thrust::device_vector<T> phi_data_coarse(table_coarse.begin(), table_coarse.end());
+
+
+    // FINE elasticity operator
     auto A = [&](DeviceVector& output, const DeviceVector& input){
       thrust::fill(thrust::device, output.array().begin(), output.array().end(), T(0));
 
       assemble_elasticity_action<polynomial_order>(output, input, phi_data, K, wdetJ,
         gpu_dofmap.map(), cell_list, bc_marker_device);
     };
+
+
+    // COARSE elasticity operator
+    auto A_coarse = [&](DeviceVector& output, const DeviceVector& input){
+      thrust::fill(thrust::device, output.array().begin(), output.array().end(), T(0));
+
+      assemble_elasticity_action<coarse_order>(output, input, phi_data_coarse, K_coarse, wdetJ_coarse,
+        gpu_dofmap_coarse.map(), cell_list, bc_marker_coarse_device);
+    };
+
+    // testing coarse operator
+    DeviceVector coarse_input(V_coarse->dofmap()->index_map, 3);
+    thrust::fill(thrust::device, coarse_input.array().begin(), coarse_input.array().end(), T(0));
+    DeviceVector coarse_output(V_coarse->dofmap()->index_map, 3);
+
+    A_coarse(coarse_output, coarse_input);
+    device_synchronize();
+
+    const T coarse_outout_squared = thrust::inner_product(
+      thrust::device,
+      coarse_output.array().begin(),
+      coarse_output.array().end(),
+      coarse_output.array().begin(),
+      T(0)
+    );
+
+    std::cout << "Coarse operator output norm = " << std::sqrt(coarse_outout_squared) << "\n";
+
 
     // // construct b = A*u_exact
     // A(b_device, u_device);
