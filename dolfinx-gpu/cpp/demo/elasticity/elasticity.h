@@ -7,6 +7,8 @@
 #pragma once
 
 #include <cstdint>
+#include <thrust/execution_policy.h>
+#include <thrust/fill.h>
 
 namespace detail
 {
