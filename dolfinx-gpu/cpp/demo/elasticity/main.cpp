@@ -5,293 +5,50 @@
 // SPDX-License-Identifier: MIT
 //
 
+#include <algorithm>
+#include <array>
+#include <chrono>
+#include <cmath>
+#include <cstdint>
+#include <iomanip>
+#include <memory>
+#include <numeric>
+#include <ranges>
+#include <span>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
 #include <basix/finite-element.h>
+#include <basix/interpolation.h>
 #include <boost/program_options.hpp>
 #include <dolfinx.h>
-#include <dolfinx/la/Vector.h>
-#include <basix/interpolation.h>
-#include <dolfinx/io/ADIOS2Writers.h>
 #include <dolfinx/fem/Constant.h>
+#include <dolfinx/io/ADIOS2Writers.h>
+#include <dolfinx/la/Vector.h>
 
 #include <thrust/device_vector.h>
+#include <thrust/execution_policy.h>
 #include <thrust/fill.h>
 #include <thrust/functional.h>
-#include <thrust/transform.h>
 #include <thrust/inner_product.h>
+#include <thrust/transform.h>
 
 #include "../../include/gpu_geometry.h"
-#include "elasticity.h"
-#include "cg.h"
-#include "p_transfer.h"
-#include "util.h"
 #include "body_force.h"
-
-#include <iomanip>
-#include <cmath>
-#include <ranges>
+#include "cg.h"
+#include "elasticity.h"
+#include "p_multigrid.h"
+#include "jacobi.h"
+#include "util.h"
 
 using namespace dolfinx;
 namespace po = boost::program_options;
 
-using T = double; // float or double
-using U = dolfinx::scalar_value_t<T>;
-
+constexpr int highest_level = 3; // highest polynomial level to use in the multigrid hierarchy
+constexpr int lowest_level = 2; // lowest polynomial level to use in the multigrid hierarchy
 constexpr bool jacobi_cg = true; // use Jacobi preconditioner in CG
-
-template <typename ContainerI>
-class GPUDofMap
-{
-public:
-  /// @brief Construct a device dofmap from a host DofMap.
-  ///
-  /// Copies the flattened dofmap array to the device. The shape and
-  /// index map are stored but not copied to the device.
-  ///
-  /// @param[in] dofmap The host-side degree-of-freedom map to copy.
-  GPUDofMap(const dolfinx::fem::DofMap& dofmap)
-      : _dofmap(dofmap.map().data_handle(),
-                dofmap.map().data_handle() + dofmap.map().size()),
-        _shape({dofmap.map().extent(0), dofmap.map().extent(1)}),
-        _im(dofmap.index_map)
-  {
-  }
-
-  /// @brief Return the on-device dofmap data array.
-  ///
-  /// The array is stored in row-major order with shape
-  /// `(num_cells, num_dofs_per_cell)`.
-  ///
-  /// @return Reference to the device container holding dof indices.
-  const ContainerI& map() const { return _dofmap; }
-
-  /// @brief Return the size of the dofmap in a given dimension.
-  ///
-  /// @param[in] j Dimension index (0 for number of cells, 1 for number
-  /// of dofs per cell).
-  /// @return Size in dimension `j`.
-  std::size_t extent(int j) const { return _shape.at(j); }
-
-  /// @brief Return the index map associated with the dofmap.
-  /// @return Index map for the owned and ghost degrees-of-freedom.
-  std::shared_ptr<const dolfinx::common::IndexMap> index_map() const
-  {
-    return _im;
-  }
-
-private:
-  ContainerI _dofmap;
-  std::array<std::size_t, 2> _shape;
-  std::shared_ptr<const dolfinx::common::IndexMap> _im;
-};
-
-
-template <typename Scalar>
-struct invert_jacobi_diagonal{
-  __host__ __device__ Scalar operator()(Scalar diagonal, std::int8_t bc_marker) const{
-    if (bc_marker)
-      return Scalar(1); // set the value to 1 if it is clamped
-    else
-      return Scalar(1) / diagonal; // invert the diagonal value
-  }
-};
-
-
-// Jacobi smoother
-// one weighted jacobi step: x = x + omega * D^{-1} * (b - Ax)
-template <typename Vector, typename Operator>
-void jacobi_smooth(
-  Operator& A,
-  Vector& x,
-  const Vector& b,
-  const Vector& diagonal_inverse,
-  Vector& Ax,
-  Vector& residual,
-  int num_steps,
-  typename Vector::value_type omega)
-{
-  using Scalar = typename Vector::value_type;
-
-  for (int step = 0; step < num_steps; ++step){
-    A(Ax, x); // compute Ax
-
-    // compute residual = b - Ax
-    thrust::transform(
-      thrust::device,
-      b.array().begin(),
-      b.array().end(),
-      Ax.array().begin(),
-      residual.array().begin(),
-      thrust::minus<Scalar>()
-    );
-
-    // multiply residual by inverse diagonal
-    thrust::transform(
-      thrust::device,
-      residual.array().begin(),
-      residual.array().end(),
-      diagonal_inverse.array().begin(),
-      residual.array().begin(),
-      thrust::multiplies<Scalar>()
-    );
-
-    // add result to x with damping factor omega
-    thrust::transform(
-      thrust::device,
-      residual.array().begin(),
-      residual.array().end(),
-      x.array().begin(),
-      x.array().begin(),
-      elasticity::axpyOperation<Scalar>{omega}
-    );
-  }
-};
-
-
-// residual norm helper function
-template <typename Vector, typename Operator>
-typename Vector::value_type residual_norm(
-  Operator& A,
-  const Vector& x,
-  const Vector& b,
-  Vector& Ax,
-  Vector& residual)
-{
-  using Scalar = typename Vector::value_type;
-
-  A(Ax, x); // compute Ax
-
-  // compute residual = b - Ax
-  thrust::transform(
-    thrust::device,
-    b.array().begin(),
-    b.array().end(),
-    Ax.array().begin(),
-    residual.array().begin(),
-    thrust::minus<Scalar>()
-  );
-
-  // compute norm of residual
-  const Scalar norm_squared = thrust::inner_product(
-    thrust::device,
-    residual.array().begin(),
-    residual.array().end(),
-    residual.array().begin(),
-    Scalar(0)
-  );
-
-  return std::sqrt(norm_squared);
-};
-
-
-template <int P>
-class ElasticityLevel{
-  public:
-    using DeviceScalarVector = thrust::device_vector<T>;
-    using DeviceIndexVector = thrust::device_vector<std::int32_t>;
-    using DeviceMarkerVector = thrust::device_vector<std::int8_t>;
-    using DeviceVector = dolfinx::la::Vector<T, DeviceScalarVector>;
-
-    static constexpr int order = P;
-    static constexpr int ndofs = detail::elasticity_traits<P>::ndofs;
-    static constexpr int quadrature_degree = detail::elasticity_traits<P>::quadrature_degree;
-  
-  private:
-    // all polynomial meshes use the same mesh cells
-    const DeviceIndexVector& _cell_list;
-  
-  public:
-    basix::FiniteElement<U> elem;
-    std::shared_ptr<fem::FunctionSpace<U>> V;
-    GPUDofMap<DeviceIndexVector> gpu_dofmap;
-    GPUGeometry<thrust::device_vector<U>, DeviceIndexVector> geometry;
-
-    std::size_t nq = 0;
-
-    DeviceScalarVector phi_data;
-    DeviceScalarVector K;
-    DeviceScalarVector wdetJ;
-    DeviceMarkerVector bc_marker;
-    std::vector<std::int32_t> bc_nodes;
-
-    template <typename BoundaryLocator>
-    ElasticityLevel(
-      const std::shared_ptr<dolfinx::mesh::Mesh<U>>& mesh_ptr,
-      const DeviceIndexVector& cell_list,
-      const BoundaryLocator& boundary_locator)
-      : _cell_list(cell_list),
-        elem(basix::create_element<U>(
-          basix::element::family::P, basix::cell::type::tetrahedron, P,
-          basix::element::lagrange_variant::equispaced,
-          basix::element::dpc_variant::unset,
-          /* discontinuous = */ false)),
-        V(std::make_shared<fem::FunctionSpace<U>>(fem::create_functionspace<U>(
-          mesh_ptr, std::make_shared<fem::FiniteElement<U>>(
-            elem, std::vector<std::size_t>{3})))),
-          gpu_dofmap(*(V->dofmap())),
-          geometry(mesh_ptr->geometry(), quadrature_degree)
-    {
-      build_geometry();
-      build_basis();
-      build_bc_marker(boundary_locator);
-    }
-
-    // apply elasticity operator for this level
-    void operator()(DeviceVector& output, const DeviceVector& input) const
-    {
-      thrust::fill(thrust::device, output.array().begin(), output.array().end(), T(0));
-      assemble_elasticity_action<P>(output, input, phi_data, K, wdetJ,
-                                    gpu_dofmap.map(), _cell_list, bc_marker);
-    }
-
-    // assemble the diagonal of the elasticity operator for this level
-    void assemble_diagonal(DeviceVector& diagonal) const
-    {
-      thrust::fill(thrust::device, diagonal.array().begin(), diagonal.array().end(), T(0));
-      assemble_elasticity_diagonal<P>(diagonal, phi_data, K, wdetJ, gpu_dofmap.map(), _cell_list, bc_marker);
-    }
-  
-  private:
-    void build_geometry(){
-      // three coordinates per quadrature point
-      nq = geometry.qpoints().size() / 3;
-
-      wdetJ.resize(_cell_list.size() * nq);
-      geometry.compute_detJ(wdetJ, _cell_list);
-
-      K.resize(_cell_list.size() * nq * 9);
-      geometry.compute_K9(K, wdetJ, _cell_list);
-    }
-
-    void build_basis(){
-      auto shape = elem.tabulate_shape(1, nq);
-      const std::size_t table_size = std::accumulate(shape.begin(), shape.end(), std::size_t(1), std::multiplies<std::size_t>());
-      std::vector<T> table(table_size);
-      std::vector<T> qpoints(geometry.qpoints().size());
-
-      thrust::copy(geometry.qpoints().begin(), geometry.qpoints().end(), qpoints.begin());
-      elem.tabulate(1, std::span(qpoints), {nq, 3}, std::span(table));
-
-      phi_data = DeviceScalarVector(table.begin(), table.end());
-    }
-
-    template <typename BoundaryLocator>
-    void build_bc_marker(const BoundaryLocator& boundary_locator){
-      // find the clamped nodes
-      bc_nodes = fem::locate_dofs_geometrical(*V, boundary_locator);
-
-      // create a temporary function to obtain the scalar vector size
-      auto size_function = std::make_shared<fem::Function<T>>(V);
-      std::vector<std::int8_t> bc_marker_host(size_function->x()->array().size(), false);
-
-      for (std::size_t node : bc_nodes){
-        bc_marker_host[3 * node + 0] = true;
-        bc_marker_host[3 * node + 1] = true;
-        bc_marker_host[3 * node + 2] = true;
-      }
-
-      bc_marker = DeviceMarkerVector(bc_marker_host.begin(), bc_marker_host.end());
-    }
-};
 
 
 int main(int argc, char* argv[])
@@ -340,9 +97,11 @@ int main(int argc, char* argv[])
       return marker;
     };
 
-    ElasticityLevel<3> level_3(mesh, cell_list, left_boundary);
-    ElasticityLevel<2> level_2(mesh, cell_list, left_boundary);
+    PMultigridHierarchy<highest_level, lowest_level> hierarchy(mesh, cell_list, left_boundary);
 
+    // temp variables to keep rest of code working
+    auto& level_3 = hierarchy.level;
+    auto& level_2 = hierarchy.coarser.level;
 
     // -----------------------------------------------------------------------
     // Finite element space
@@ -365,7 +124,6 @@ int main(int argc, char* argv[])
     // -----------------------------------------------------------------------
     // Functions
     // -----------------------------------------------------------------------
-    // auto u = std::make_shared<fem::Function<T>>(V);
     auto b = std::make_shared<fem::Function<T>>(level_3.V);
 
     // const force [0 0 -0.001]
@@ -405,18 +163,18 @@ int main(int argc, char* argv[])
     cg_solver.set_max_iterations(2000);
     cg_solver.set_tolerance(T(1e-8));
 
-    DeviceVector diagonal_inverse(level_3.V->dofmap()->index_map, 3);
-    thrust::fill(thrust::device, diagonal_inverse.array().begin(), diagonal_inverse.array().end(), T(0));
+    DeviceVector level_3_inverse_diagonal(level_3.V->dofmap()->index_map, 3);
+    thrust::fill(thrust::device, level_3_inverse_diagonal.array().begin(), level_3_inverse_diagonal.array().end(), T(0));
     
-    level_3.assemble_diagonal(diagonal_inverse);
+    level_3.assemble_diagonal(level_3_inverse_diagonal);
     
     // convert diag(A) to diag(A)^{-1}
-    thrust::transform(thrust::device, diagonal_inverse.array().begin(), diagonal_inverse.array().end(),
-      level_3.bc_marker.begin(), diagonal_inverse.array().begin(), invert_jacobi_diagonal<T>());
+    thrust::transform(thrust::device, level_3_inverse_diagonal.array().begin(), level_3_inverse_diagonal.array().end(),
+      level_3.bc_marker.begin(), level_3_inverse_diagonal.array().begin(), invert_jacobi_diagonal<T>());
 
     if (jacobi_cg){
       // copy diag(A)^{-1} to CG solver
-      cg_solver.set_diag_inverse(diagonal_inverse);
+      cg_solver.set_diag_inverse(level_3_inverse_diagonal);
     }
 
     device_synchronize();
@@ -435,7 +193,7 @@ int main(int argc, char* argv[])
     constexpr int jacobi_steps = 1;
     constexpr T omega = T(0.3);
 
-    jacobi_smooth(level_3, x_smoother_test, b_device, diagonal_inverse, level_3_Ax, level_3_residual, jacobi_steps, omega);
+    jacobi_smooth(level_3, x_smoother_test, b_device, level_3_inverse_diagonal, level_3_Ax, level_3_residual, jacobi_steps, omega);
 
     const T residual_after = residual_norm(level_3, x_smoother_test, b_device, level_3_Ax, level_3_residual);
     std::cout << "Residual norm after Jacobi smoothing = " << residual_after << "\n";
@@ -474,9 +232,6 @@ int main(int argc, char* argv[])
     thrust::copy(b_device.array().begin(), b_device.array().end(), b->x()->array().begin());
 
     std::cout << std::setprecision(17);
-
-    // std::cout << "Exact u norm = "
-    //           << dolfinx::la::norm(*u->x()) << "\n";
 
     std::cout << "Computed x norm = "
               << dolfinx::la::norm(*x->x()) << "\n";

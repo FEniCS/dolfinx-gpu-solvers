@@ -1,7 +1,19 @@
 #pragma once
 
-#include <cstdint>
+#include "elasticity_level.h"
+
 #include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <thrust/device_vector.h>
+
+#if defined(__HIP_PLATFORM_AMD__)
+    #include <hip/hip_runtime.h>
+#else
+    #include <cuda/atomic>
+    #include <cuda_runtime.h>
+#endif
+
 
 namespace p_transfer
 {
@@ -43,9 +55,15 @@ namespace p_transfer
         
         const std::int32_t fine_node = fine_dofmap[cell * fine_dofs + fine_i]; // global fine node
         const std::int32_t fine_dof = fine_node * 3 + component; // convert fine node into vector dof
-        // atomic store used to remove write race condition
-        cuda::atomic_ref<T, cuda::thread_scope_system> ref(fine_values[fine_dof]);
-        ref.store(value, cuda::memory_order_relaxed); // write the computed fine value to the output vector
+
+        #if defined(__HIP_PLATFORM_AMD__)
+            fine_values[fine_dof] = value; // write the computed fine value to the output vector
+            // at some point, fix HIP write race maybe with cell ownership?
+        #else
+            // atomic store used to remove write race condition
+            cuda::atomic_ref<T, cuda::thread_scope_system> ref(fine_values[fine_dof]);
+            ref.store(value, cuda::memory_order_relaxed); // write the computed fine value to the output vector
+        #endif
     }
 
 
@@ -85,3 +103,81 @@ namespace p_transfer
         }
     }
 } // namespace p_transfer
+
+
+// recursive template for multigrid hierarchy
+template <int P, int LowestOrder>
+class PMultigridHierarchy{
+  public:
+    ElasticityLevel<P> level;
+    PMultigridHierarchy<P - 1, LowestOrder> coarser;
+
+    template <typename MeshPtr, typename CellList, typename BoundaryLocator>
+    PMultigridHierarchy(
+      const MeshPtr& mesh_ptr,
+      const CellList& cell_list,
+      const BoundaryLocator& boundary_locator)
+      : level(mesh_ptr, cell_list, boundary_locator),
+        coarser(mesh_ptr, cell_list, boundary_locator)
+    {
+    }
+
+    template <typename Vector>
+    void v_cycle(Vector& solution, const Vector& rhs)
+    {
+      // pre-smoothing on level P //
+      // apply small number of Jacobi smoothing iterations on current level P
+
+      // compute residual_P = rhs_P - A_P * solution_P //
+
+      // restrict residual_P to level P-1 //
+      // apply restriction operator to residual_P to get rhs_coarse:
+      // rhs_coarse = R * residual_P where R = P^T
+
+      // set level P-1 correction to 0 //
+      // correction_coarse = 0
+
+      // recursively solve the correction problem //
+      // coarser.v_cycle(correction_coarse, rhs_coarse)
+
+      // prolongate correction_coarse from level P-1 to level P //
+      // correction_P = P * correction_coarse
+
+      // add correction to solution_P //
+      // update solution_P = solution_P + correction_P
+
+      // post-smoothing on level P//
+      // apply another small number of Jacobi smoothing iterations
+
+      (void) solution; // placeholder for unused variable warning
+      (void) rhs; // placeholder for unused variable warning
+    }
+};
+
+// template specialisation for the lowest order level
+// stop the recursion when lowest order = current order
+template <int LowestOrder>
+class PMultigridHierarchy<LowestOrder, LowestOrder>{
+  public:
+    ElasticityLevel<LowestOrder> level;
+
+    template <typename MeshPtr, typename CellList, typename BoundaryLocator>
+    PMultigridHierarchy(
+      const MeshPtr& mesh_ptr,
+      const CellList& cell_list,
+      const BoundaryLocator& boundary_locator)
+      : level(mesh_ptr, cell_list, boundary_locator)
+    {
+    }
+
+    template <typename Vector>
+    void v_cycle(Vector& solution, const Vector& rhs)
+    {
+      // solve the coarsest level problem directly //
+      // for now, could just do CG
+      // PETSc PCGAMG
+
+      (void) solution; // placeholder for unused variable warning
+      (void) rhs; // placeholder for unused variable warning
+    }
+  };
