@@ -5,6 +5,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
 #include <thrust/device_vector.h>
 
 #if defined(__HIP_PLATFORM_AMD__)
@@ -109,8 +113,17 @@ namespace p_transfer
 template <int P, int LowestOrder>
 class PMultigridHierarchy{
   public:
-    ElasticityLevel<P> level;
-    PMultigridHierarchy<P - 1, LowestOrder> coarser;
+    ElasticityLevel<P> level; // current polynomial level
+    PMultigridHierarchy<P - 1, LowestOrder> coarser; // hierachy beginning at the next lower polynomial level
+    thrust::device_vector<T> interpolation; // interpolation matrix from level P-1 to level P
+    
+    using DeviceIndexVector = thrust::device_vector<std::int32_t>;
+
+    // information needed to perform transfers involving level P
+    std::size_t num_fine_nodes = 0;
+    std::size_t num_coarse_nodes = 0;
+    DeviceIndexVector owner_cell;
+    DeviceIndexVector owner_local;
 
     template <typename MeshPtr, typename CellList, typename BoundaryLocator>
     PMultigridHierarchy(
@@ -120,6 +133,15 @@ class PMultigridHierarchy{
       : level(mesh_ptr, cell_list, boundary_locator),
         coarser(mesh_ptr, cell_list, boundary_locator)
     {
+        // build interpolation matrix from level P-1 to level P
+        auto [interpolation_host, interpolation_shape] = basix::compute_interpolation_operator(
+            coarser.level.elem, level.elem
+        );
+
+        interpolation.assign(interpolation_host.begin(), interpolation_host.end());
+        
+        build_fine_node_owners();
+
     }
 
     template <typename Vector>
@@ -152,6 +174,51 @@ class PMultigridHierarchy{
       (void) solution; // placeholder for unused variable warning
       (void) rhs; // placeholder for unused variable warning
     }
+
+    private:
+      // compute the owner cell and local index for each fine node
+      void build_fine_node_owners()
+      {
+        const auto fine_index_map = level.V->dofmap()->index_map;
+
+        num_fine_nodes = static_cast<std::size_t>(fine_index_map->size_local() 
+            + static_cast<std::size_t>(fine_index_map->num_ghosts()));
+
+        const auto fine_dofmap = level.V->dofmap()->map(); // flattened dofmap for level P
+
+        std::vector<std::int32_t> owner_cell_host(num_fine_nodes, std::int32_t(-1));
+        std::vector<std::int32_t> owner_local_host(num_fine_nodes, std::int32_t(-1));
+
+        // visit every cell and fine node
+        for (std::size_t cell = 0; cell < fine_dofmap.extent(0); ++cell)
+        {
+          for (std::size_t fine_i = 0; fine_i < fine_dofmap.extent(1); ++fine_i)
+          {
+            const std::int32_t fine_node = fine_dofmap(cell, fine_i);
+            // if this fine node has not yet been assigned an owner cell, assign it now
+            if (owner_cell_host[fine_node] == std::int32_t(-1)){
+                owner_cell_host[fine_node] = static_cast<std::int32_t>(cell);
+                owner_local_host[fine_node] = static_cast<std::int32_t>(fine_i);
+            }
+          }
+        }
+
+        // check that every fine node received an owner
+        for (std::size_t fine_node = 0; fine_node < num_fine_nodes; ++fine_node){
+          const std::int32_t cell = owner_cell_host[fine_node];
+          const std::int32_t local = owner_local_host[fine_node];
+          if (cell == std::int32_t(-1) || local == std::int32_t(-1)){
+            throw std::runtime_error("Fine node " + std::to_string(fine_node) + " has no owner cell");
+          }
+          if (fine_dofmap(cell, local) != static_cast<std::int32_t>(fine_node)){
+            throw std::runtime_error("Fine node " + std::to_string(fine_node) + " is not owned by cell " + std::to_string(cell) + " at local index " + std::to_string(local));
+          }
+        }
+
+        // copy to device
+        owner_cell.assign(owner_cell_host.begin(), owner_cell_host.end());
+        owner_local.assign(owner_local_host.begin(), owner_local_host.end());
+      }
 };
 
 // template specialisation for the lowest order level
