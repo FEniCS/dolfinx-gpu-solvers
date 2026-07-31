@@ -9,6 +9,10 @@
 #include <string>
 #include <vector>
 
+#include <basix/interpolation.h>
+
+#include <thrust/execution_policy.h>
+#include <thrust/fill.h>
 #include <thrust/device_vector.h>
 
 #if defined(__HIP_PLATFORM_AMD__)
@@ -109,20 +113,23 @@ namespace p_transfer
 } // namespace p_transfer
 
 
+// forward declaration of p-multigrid hierarchy that lets you describe exact sequence of polynomial levels
+template <int... Orders>
+class PMultigridHierarchy;
+
 // recursive template for multigrid hierarchy
-template <int P, int LowestOrder>
-class PMultigridHierarchy{
+template <int FineP, int NextCoarserP, int... RemainingOrders>
+class PMultigridHierarchy<FineP, NextCoarserP, RemainingOrders...>{
   public:
-    ElasticityLevel<P> level; // current polynomial level
-    PMultigridHierarchy<P - 1, LowestOrder> coarser; // hierachy beginning at the next lower polynomial level
-    thrust::device_vector<T> interpolation; // interpolation matrix from level P-1 to level P
-    
+    ElasticityLevel<FineP> level; // current polynomial level
+    PMultigridHierarchy<NextCoarserP, RemainingOrders...> coarser; // hierachy beginning at the next lower polynomial level
+    thrust::device_vector<T> interpolation; // interpolation matrix from level NextCoarserP to level FineP
+
     using DeviceIndexVector = thrust::device_vector<std::int32_t>;
     using DeviceVector = dolfinx::la::Vector<T, thrust::device_vector<T>>;  
 
     // information needed to perform transfers involving level P
     std::size_t num_fine_nodes = 0;
-    std::size_t num_coarse_nodes = 0;
     DeviceIndexVector owner_cell;
     DeviceIndexVector owner_local;
 
@@ -134,7 +141,7 @@ class PMultigridHierarchy{
       : level(mesh_ptr, cell_list, boundary_locator),
         coarser(mesh_ptr, cell_list, boundary_locator)
     {
-        // build interpolation matrix from level P-1 to level P
+        // build interpolation matrix from level CoarseP to level FineP
         auto [interpolation_host, interpolation_shape] = basix::compute_interpolation_operator(
             coarser.level.elem, level.elem
         );
@@ -142,17 +149,16 @@ class PMultigridHierarchy{
         interpolation.assign(interpolation_host.begin(), interpolation_host.end());
         
         build_fine_node_owners();
-
     }
 
 
-    // wrapper for the prolongation operator from level P-1 to level P
+    // wrapper for the prolongation operator from level CoarseP to level FineP
     void prolong(const DeviceVector& coarse_values, DeviceVector& fine_values) const
     {
-        constexpr int coarse_dofs = detail::elasticity_traits<P - 1>::ndofs;
-        constexpr int fine_dofs = detail::elasticity_traits<P>::ndofs;
+        constexpr int coarse_dofs = detail::elasticity_traits<NextCoarserP>::ndofs;
+        constexpr int fine_dofs = detail::elasticity_traits<FineP>::ndofs;
 
-        const std::size_t num_cells = level._cell_list.size();
+        const std::size_t num_cells = level.gpu_dofmap.extent(0); // number of cells in the mesh
         const std::size_t total_tasks = num_cells * fine_dofs * 3; // number of tasks for each cell, local fine node, and component
 
         const int block_size = 256;
@@ -169,11 +175,11 @@ class PMultigridHierarchy{
     }
 
     
-    // wrapper for the restriction operator from level P to level P-1
+    // wrapper for the restriction operator from level FineP to level CoarseP
     void restrict(const DeviceVector& fine_values, DeviceVector& coarse_values) const
     {
-        constexpr int coarse_dofs = detail::elasticity_traits<P - 1>::ndofs;
-        constexpr int fine_dofs = detail::elasticity_traits<P>::ndofs;
+        constexpr int coarse_dofs = detail::elasticity_traits<NextCoarserP>::ndofs;
+        constexpr int fine_dofs = detail::elasticity_traits<FineP>::ndofs;
 
         thrust::fill(thrust::device, coarse_values.array().begin(), coarse_values.array().end(), T(0));
         
@@ -196,28 +202,28 @@ class PMultigridHierarchy{
     template <typename Vector>
     void v_cycle(Vector& solution, const Vector& rhs)
     {
-      // pre-smoothing on level P //
-      // apply small number of Jacobi smoothing iterations on current level P
+      // pre-smoothing on level FineP //
+      // apply small number of Jacobi smoothing iterations on current level FineP
 
-      // compute residual_P = rhs_P - A_P * solution_P //
+      // compute residual_FineP = rhs_FineP - A_FineP * solution_FineP //
 
-      // restrict residual_P to level P-1 //
-      // apply restriction operator to residual_P to get rhs_coarse:
-      // rhs_coarse = R * residual_P where R = P^T
+      // restrict residual_FineP to level CoarseP //
+      // apply restriction operator to residual_FineP to get rhs_coarse:
+      // rhs_coarse = R * residual_FineP where R = P^T
 
-      // set level P-1 correction to 0 //
+      // set level CoarseP correction to 0 //
       // correction_coarse = 0
 
       // recursively solve the correction problem //
       // coarser.v_cycle(correction_coarse, rhs_coarse)
 
-      // prolongate correction_coarse from level P-1 to level P //
-      // correction_P = P * correction_coarse
+      // prolongate correction_coarse from level CoarseP to level FineP //
+      // correction_FineP = P * correction_coarse
 
-      // add correction to solution_P //
-      // update solution_P = solution_P + correction_P
+      // add correction to solution_FineP //
+      // update solution_FineP = solution_FineP + correction_FineP
 
-      // post-smoothing on level P//
+      // post-smoothing on level FineP//
       // apply another small number of Jacobi smoothing iterations
 
       (void) solution; // placeholder for unused variable warning
@@ -272,10 +278,10 @@ class PMultigridHierarchy{
 
 // template specialisation for the lowest order level
 // stop the recursion when lowest order = current order
-template <int LowestOrder>
-class PMultigridHierarchy<LowestOrder, LowestOrder>{
+template <int LastCoarserP>
+class PMultigridHierarchy<LastCoarserP>{
   public:
-    ElasticityLevel<LowestOrder> level;
+    ElasticityLevel<LastCoarserP> level;
 
     template <typename MeshPtr, typename CellList, typename BoundaryLocator>
     PMultigridHierarchy(
