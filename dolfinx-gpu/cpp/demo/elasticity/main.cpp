@@ -36,11 +36,6 @@
 using namespace dolfinx;
 namespace po = boost::program_options;
 
-constexpr int highest_level = 3; // highest polynomial level to use in the multigrid hierarchy
-constexpr int lowest_level = 2; // lowest polynomial level to use in the multigrid hierarchy
-constexpr bool jacobi_cg = true; // use Jacobi preconditioner in CG
-
-
 int main(int argc, char* argv[])
 {
   MPI_Init(&argc, &argv);
@@ -87,7 +82,9 @@ int main(int argc, char* argv[])
       return marker;
     };
 
-    PMultigridHierarchy<highest_level, lowest_level> hierarchy(mesh, cell_list, left_boundary);
+    using Hierarchy = PMultigridHierarchy<3, 2, 1>;
+    Hierarchy hierarchy(mesh, cell_list, left_boundary);
+
 
     // temp variables to keep rest of code working
     auto& fine_level = hierarchy.level;
@@ -111,7 +108,7 @@ int main(int argc, char* argv[])
     );
 
     // start with 0 host vector for b
-    std::ranges:: fill(b->x()->array(), T(0));
+    std::ranges::fill(b->x()->array(), T(0));
     // assemble b_i = integral(B * phi_i)dx for all i
     fem::assemble_vector(b->x()->array(), load_form);
 
@@ -130,52 +127,57 @@ int main(int argc, char* argv[])
     DeviceVector x_device(fine_level.V->dofmap()->index_map, 3);
     thrust::fill(thrust::device, x_device.array().begin(), x_device.array().end(), T(0));
 
-    // create CG solver
-    elasticity::CGSolver<DeviceVector> cg_solver(fine_level.V->dofmap()->index_map, 3);
-    cg_solver.set_max_iterations(2000);
-    cg_solver.set_tolerance(T(1e-8));
-
-    DeviceVector fine_inverse_diagonal(fine_level.V->dofmap()->index_map, 3);
-    thrust::fill(thrust::device, fine_inverse_diagonal.array().begin(), fine_inverse_diagonal.array().end(), T(0));
-    
-    fine_level.assemble_diagonal(fine_inverse_diagonal);
-    
-    // convert diag(A) to diag(A)^{-1}
-    thrust::transform(thrust::device, fine_inverse_diagonal.array().begin(), fine_inverse_diagonal.array().end(),
-      fine_level.bc_marker.begin(), fine_inverse_diagonal.array().begin(), invert_jacobi_diagonal<T>());
-
-    if (jacobi_cg){
-      // copy diag(A)^{-1} to CG solver
-      cg_solver.set_diag_inverse(fine_inverse_diagonal);
-    }
-
-    device_synchronize();
+    DeviceVector fine_Ax(fine_level.V->dofmap()->index_map, 3);
+    DeviceVector fine_residual(fine_level.V->dofmap()->index_map, 3);
 
     // timing 
     constexpr int runs = 1;
+    constexpr int max_v_cycles = 100;
+    constexpr T residual_tolerance = T(1e-8);
+
     std::vector<double> times;
     times.reserve(runs);
 
-    int iterations = 0;
+    int v_cycles = 0;
+    T initial_residual_norm = T(0);
+    T final_residual_norm = T(0);
 
-    for (int i = 0; i < runs; ++i){
+    std::cout << std::setprecision(17);
+
+    for (int run = 0; run < runs; ++run)
+    {
+      // reset x to 0 for each run
       thrust::fill(thrust::device, x_device.array().begin(), x_device.array().end(), T(0));
       device_synchronize();
 
-      const auto start = std::chrono::high_resolution_clock::now();
+      initial_residual_norm = residual_norm(fine_level, x_device, b_device, fine_Ax, fine_residual);
+      final_residual_norm = initial_residual_norm;
+      v_cycles = 0;
 
-      iterations = cg_solver.solve(fine_level, x_device, b_device, jacobi_cg);
+      const T target_residual_norm = initial_residual_norm * residual_tolerance;
+
+      const auto start_time = std::chrono::high_resolution_clock::now();
+
+      while (final_residual_norm > target_residual_norm && v_cycles < max_v_cycles)
+      {
+        hierarchy.v_cycle(x_device, b_device);
+        final_residual_norm = residual_norm(fine_level, x_device, b_device, fine_Ax, fine_residual);
+        ++v_cycles;
+      }
+      
       device_synchronize();
 
-      const auto end = std::chrono::high_resolution_clock::now();
-
-      const double seconds = std::chrono::duration<double>(end - start).count();
-      times.push_back(seconds);
+      const auto end_time = std::chrono::high_resolution_clock::now();
+      times.push_back(std::chrono::duration<double>(end_time - start_time).count());
     }
 
-    const double avg_time = std::accumulate(times.begin(), times.end(), 0.0) / runs;
-    std::cout << "Average solve time = " << avg_time << " seconds\n";
-    std::cout << "Number of iterations = " << iterations << "\n";
+    std::cout << "Number of iterations: " << v_cycles << "\n";
+
+    const double average_time = std::accumulate(times.begin(), times.end(), 0.0) / times.size();
+    std::cout << "Average multigrid solve time: " << average_time << " seconds\n";
+
+    std::cout << "Initial residual norm: " << initial_residual_norm << "\n";
+    std::cout << "Final residual norm: " << final_residual_norm << "\n";
 
     auto x = std::make_shared<fem::Function<T>>(fine_level.V);
 

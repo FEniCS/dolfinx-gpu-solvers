@@ -86,6 +86,7 @@ namespace p_transfer
         const std::int32_t* __restrict__ coarse_dofmap,
         const std::int32_t* __restrict__ owner_cell,
         const std::int32_t* __restrict__ owner_local,
+        const std::int8_t* __restrict__ coarse_bc_marker,
         const T* __restrict__ fine_values,
         T* __restrict__ coarse_values)
     {
@@ -109,7 +110,10 @@ namespace p_transfer
             const std::int32_t coarse_dof = coarse_node * 3 + component; // convert coarse node into vector dof
 
             const T P_ij = interpolation[fine_i * coarse_dofs + coarse_j]; // read one interpolation matrix entry
-            atomicAdd(&coarse_values[coarse_dof], P_ij * fine_value); // add contribution to the coarse value
+            
+            if (!coarse_bc_marker[coarse_node]){ // only add contribution if coarse node is not clamped
+              atomicAdd(&coarse_values[coarse_dof], P_ij * fine_value); // add contribution to the coarse value
+            }
         }
     }
 } // namespace p_transfer
@@ -222,6 +226,7 @@ class PMultigridHierarchy<FineP, NextCoarserP, RemainingOrders...>{
             coarser.level.gpu_dofmap.map().data().get(),
             owner_cell.data().get(),
             owner_local.data().get(),
+            coarser.level.bc_marker.data().get(),
             fine_values.array().data().get(),
             coarse_values.array().data().get()
         );
@@ -233,7 +238,7 @@ class PMultigridHierarchy<FineP, NextCoarserP, RemainingOrders...>{
     {
       constexpr int pre_smooth_steps = 3;
       constexpr int post_smooth_steps = 3;
-      constexpr T omega = T(2.0 / 3.0); // damping factor
+      constexpr T omega = T(0.3); // damping factor
 
       // pre-smoothing on level FineP
       jacobi_smooth(level, solution, rhs, diagonal_inverse, fine_Ax, fine_residual, pre_smooth_steps, omega);
@@ -334,14 +339,20 @@ class PMultigridHierarchy<LastCoarserP>{
       level.assemble_diagonal(diagonal_inverse);
 
       // compute the inverse of the diagonal
-      thrust::transform(thrust::device, diagonal_inverse.array().begin(), diagonal_inverse.array().end(),
-                        diagonal_inverse.array().begin(), thrust::placeholders::_1 = 1.0 / thrust::placeholders::_1);
+      thrust::transform(
+        thrust::device, 
+        diagonal_inverse.array().begin(), 
+        diagonal_inverse.array().end(),
+        level.bc_marker.begin(),
+        diagonal_inverse.array().begin(),
+        invert_jacobi_diagonal<T>{}
+      );
 
       // set the coarse solver's diagonal inverse
       coarse_solver.set_diag_inverse(diagonal_inverse);
 
       coarse_solver.set_max_iterations(1000);
-      coarse_solver.set_tolerance(1e-8);
+      coarse_solver.set_tolerance(T(1e-8));
     }
 
     template <typename Vector>
@@ -351,6 +362,6 @@ class PMultigridHierarchy<LastCoarserP>{
       // for now, could just do CG
       // PETSc PCGAMG
 
-      coarse_solver(level, solution, rhs, true);
+      coarse_solver.solve(level, solution, rhs, true);
     }
   };
