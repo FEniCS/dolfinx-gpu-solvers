@@ -118,6 +118,7 @@ class PMultigridHierarchy{
     thrust::device_vector<T> interpolation; // interpolation matrix from level P-1 to level P
     
     using DeviceIndexVector = thrust::device_vector<std::int32_t>;
+    using DeviceVector = dolfinx::la::Vector<T, thrust::device_vector<T>>;  
 
     // information needed to perform transfers involving level P
     std::size_t num_fine_nodes = 0;
@@ -143,6 +144,54 @@ class PMultigridHierarchy{
         build_fine_node_owners();
 
     }
+
+
+    // wrapper for the prolongation operator from level P-1 to level P
+    void prolong(const DeviceVector& coarse_values, DeviceVector& fine_values) const
+    {
+        constexpr int coarse_dofs = detail::elasticity_traits<P - 1>::ndofs;
+        constexpr int fine_dofs = detail::elasticity_traits<P>::ndofs;
+
+        const std::size_t num_cells = level._cell_list.size();
+        const std::size_t total_tasks = num_cells * fine_dofs * 3; // number of tasks for each cell, local fine node, and component
+
+        const int block_size = 256;
+        const int grid_size = static_cast<int>((total_tasks + block_size - 1) / block_size);
+
+        p_transfer::prolong_cells<T, coarse_dofs, fine_dofs><<<grid_size, block_size>>>(
+            num_cells,
+            interpolation.data().get(),
+            coarser.level.gpu_dofmap.map().data().get(),
+            level.gpu_dofmap.map().data().get(),
+            coarse_values.array().data().get(),
+            fine_values.array().data().get()
+        );
+    }
+
+    
+    // wrapper for the restriction operator from level P to level P-1
+    void restrict(const DeviceVector& fine_values, DeviceVector& coarse_values) const
+    {
+        constexpr int coarse_dofs = detail::elasticity_traits<P - 1>::ndofs;
+        constexpr int fine_dofs = detail::elasticity_traits<P>::ndofs;
+
+        thrust::fill(thrust::device, coarse_values.array().begin(), coarse_values.array().end(), T(0));
+        
+        const int block_size = 256;
+        const std::size_t total_tasks = num_fine_nodes * 3; // number of tasks for each fine node and component
+        const int grid_size = static_cast<int>((total_tasks + block_size - 1) / block_size);
+
+        p_transfer::restrict_nodes<T, coarse_dofs, fine_dofs><<<grid_size, block_size>>>(
+            num_fine_nodes,
+            interpolation.data().get(),
+            coarser.level.gpu_dofmap.map().data().get(),
+            owner_cell.data().get(),
+            owner_local.data().get(),
+            fine_values.array().data().get(),
+            coarse_values.array().data().get()
+        );
+    }
+
 
     template <typename Vector>
     void v_cycle(Vector& solution, const Vector& rhs)
