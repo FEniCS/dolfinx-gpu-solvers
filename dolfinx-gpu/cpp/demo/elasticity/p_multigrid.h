@@ -1,6 +1,8 @@
 #pragma once
 
 #include "elasticity_level.h"
+#include "jacobi.h"
+#include "cg.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -133,22 +135,49 @@ class PMultigridHierarchy<FineP, NextCoarserP, RemainingOrders...>{
     DeviceIndexVector owner_cell;
     DeviceIndexVector owner_local;
 
+    // Jacobi data on fineP
+    DeviceVector fine_Ax;
+    DeviceVector fine_residual;
+    DeviceVector diagonal_inverse;
+
+    // vectors used on NextCoarserP
+    DeviceVector coarse_rhs;
+    DeviceVector coarse_correction;
+
+    // prolongated correction on FineP
+    DeviceVector fine_correction;
+
     template <typename MeshPtr, typename CellList, typename BoundaryLocator>
     PMultigridHierarchy(
       const MeshPtr& mesh_ptr,
       const CellList& cell_list,
       const BoundaryLocator& boundary_locator)
       : level(mesh_ptr, cell_list, boundary_locator),
-        coarser(mesh_ptr, cell_list, boundary_locator)
+        coarser(mesh_ptr, cell_list, boundary_locator),
+        diagonal_inverse(level.V->dofmap()->index_map, 3),
+        fine_Ax(level.V->dofmap()->index_map, 3),
+        fine_residual(level.V->dofmap()->index_map, 3),
+        coarse_rhs(coarser.level.V->dofmap()->index_map, 3),
+        coarse_correction(coarser.level.V->dofmap()->index_map, 3),
+        fine_correction(level.V->dofmap()->index_map, 3)
     {
         // build interpolation matrix from level CoarseP to level FineP
         auto [interpolation_host, interpolation_shape] = basix::compute_interpolation_operator(
             coarser.level.elem, level.elem
         );
 
-        interpolation.assign(interpolation_host.begin(), interpolation_host.end());
-        
+        interpolation.assign(interpolation_host.begin(), interpolation_host.end()); 
         build_fine_node_owners();
+
+        // assemble inverse of diagonal
+        level.assemble_diagonal(diagonal_inverse);
+        thrust::transform(
+          thrust::device, diagonal_inverse.array().begin(), 
+          diagonal_inverse.array().end(),
+          level.bc_marker.begin(),
+          diagonal_inverse.array().begin(),
+          invert_jacobi_diagonal<T>()
+        );
     }
 
 
@@ -202,32 +231,37 @@ class PMultigridHierarchy<FineP, NextCoarserP, RemainingOrders...>{
     template <typename Vector>
     void v_cycle(Vector& solution, const Vector& rhs)
     {
-      // pre-smoothing on level FineP //
-      // apply small number of Jacobi smoothing iterations on current level FineP
+      constexpr int pre_smooth_steps = 3;
+      constexpr int post_smooth_steps = 3;
+      constexpr T omega = T(2.0 / 3.0); // damping factor
 
-      // compute residual_FineP = rhs_FineP - A_FineP * solution_FineP //
+      // pre-smoothing on level FineP
+      jacobi_smooth(level, solution, rhs, diagonal_inverse, fine_Ax, fine_residual, pre_smooth_steps, omega);
 
-      // restrict residual_FineP to level CoarseP //
+      // compute residual_FineP = rhs_FineP - A_FineP * solution_FineP
+      level(fine_Ax, solution);
+      thrust::transform(thrust::device, rhs.array().begin(), rhs.array().end(), fine_Ax.array().begin(), fine_residual.array().begin(), thrust::minus<T>());
+
+      // restrict residual_FineP to level CoarseP
       // apply restriction operator to residual_FineP to get rhs_coarse:
       // rhs_coarse = R * residual_FineP where R = P^T
+      restrict(fine_residual, coarse_rhs);
 
-      // set level CoarseP correction to 0 //
-      // correction_coarse = 0
+      // set level CoarseP correction to 0
+      thrust::fill(thrust::device, coarse_correction.array().begin(), coarse_correction.array().end(), T(0));
 
-      // recursively solve the correction problem //
-      // coarser.v_cycle(correction_coarse, rhs_coarse)
+      // recursively solve the correction problem
+      coarser.v_cycle(coarse_correction, coarse_rhs);
 
-      // prolongate correction_coarse from level CoarseP to level FineP //
-      // correction_FineP = P * correction_coarse
+      // prolongate correction_coarse from level CoarseP to level FineP
+      thrust::fill(thrust::device, fine_correction.array().begin(), fine_correction.array().end(), T(0));
+      prolong(coarse_correction, fine_correction);
 
-      // add correction to solution_FineP //
-      // update solution_FineP = solution_FineP + correction_FineP
+      // add correction to solution_FineP
+      thrust::transform(thrust::device, solution.array().begin(), solution.array().end(), fine_correction.array().begin(), solution.array().begin(), thrust::plus<T>());
 
-      // post-smoothing on level FineP//
-      // apply another small number of Jacobi smoothing iterations
-
-      (void) solution; // placeholder for unused variable warning
-      (void) rhs; // placeholder for unused variable warning
+      // post-smoothing on level FineP
+      jacobi_smooth(level, solution, rhs, diagonal_inverse, fine_Ax, fine_residual, post_smooth_steps, omega);
     }
 
     private:
@@ -281,15 +315,33 @@ class PMultigridHierarchy<FineP, NextCoarserP, RemainingOrders...>{
 template <int LastCoarserP>
 class PMultigridHierarchy<LastCoarserP>{
   public:
+    using DeviceVector = typename ElasticityLevel<LastCoarserP>::DeviceVector;
+
     ElasticityLevel<LastCoarserP> level;
+    DeviceVector diagonal_inverse; // inverse jacobi diagonal for coarse cg solver
+    elasticity::CGSolver<DeviceVector> coarse_solver; // coarse cg solver
 
     template <typename MeshPtr, typename CellList, typename BoundaryLocator>
     PMultigridHierarchy(
       const MeshPtr& mesh_ptr,
       const CellList& cell_list,
       const BoundaryLocator& boundary_locator)
-      : level(mesh_ptr, cell_list, boundary_locator)
+      : level(mesh_ptr, cell_list, boundary_locator),
+        diagonal_inverse(level.V->dofmap()->index_map, 3),
+        coarse_solver(level.V->dofmap()->index_map, 3)
     {
+      // assemble diag(A) on coarsest level
+      level.assemble_diagonal(diagonal_inverse);
+
+      // compute the inverse of the diagonal
+      thrust::transform(thrust::device, diagonal_inverse.array().begin(), diagonal_inverse.array().end(),
+                        diagonal_inverse.array().begin(), thrust::placeholders::_1 = 1.0 / thrust::placeholders::_1);
+
+      // set the coarse solver's diagonal inverse
+      coarse_solver.set_diag_inverse(diagonal_inverse);
+
+      coarse_solver.set_max_iterations(1000);
+      coarse_solver.set_tolerance(1e-8);
     }
 
     template <typename Vector>
@@ -299,7 +351,6 @@ class PMultigridHierarchy<LastCoarserP>{
       // for now, could just do CG
       // PETSc PCGAMG
 
-      (void) solution; // placeholder for unused variable warning
-      (void) rhs; // placeholder for unused variable warning
+      coarse_solver(level, solution, rhs, true);
     }
   };

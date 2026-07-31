@@ -11,36 +11,26 @@
 #include <cmath>
 #include <cstdint>
 #include <iomanip>
+#include <iostream>
 #include <memory>
 #include <numeric>
-#include <ranges>
-#include <span>
-#include <stdexcept>
-#include <string>
-#include <utility>
 #include <vector>
 
-#include <basix/finite-element.h>
-#include <basix/interpolation.h>
 #include <boost/program_options.hpp>
 #include <dolfinx.h>
 #include <dolfinx/fem/Constant.h>
-#include <dolfinx/io/ADIOS2Writers.h>
 #include <dolfinx/la/Vector.h>
 
+#include <thrust/copy.h>
 #include <thrust/device_vector.h>
 #include <thrust/execution_policy.h>
 #include <thrust/fill.h>
-#include <thrust/functional.h>
-#include <thrust/inner_product.h>
 #include <thrust/transform.h>
 
-#include "../../include/gpu_geometry.h"
 #include "body_force.h"
 #include "cg.h"
-#include "elasticity.h"
-#include "p_multigrid.h"
 #include "jacobi.h"
+#include "p_multigrid.h"
 #include "util.h"
 
 using namespace dolfinx;
@@ -101,8 +91,6 @@ int main(int argc, char* argv[])
 
     // temp variables to keep rest of code working
     auto& fine_level = hierarchy.level;
-    auto& coarser_level = hierarchy.coarser.level;
-    // auto& P_device = hierarchy.interpolation;
 
 
     // -----------------------------------------------------------------------
@@ -147,41 +135,21 @@ int main(int argc, char* argv[])
     cg_solver.set_max_iterations(2000);
     cg_solver.set_tolerance(T(1e-8));
 
-    DeviceVector level_3_inverse_diagonal(fine_level.V->dofmap()->index_map, 3);
-    thrust::fill(thrust::device, level_3_inverse_diagonal.array().begin(), level_3_inverse_diagonal.array().end(), T(0));
+    DeviceVector fine_inverse_diagonal(fine_level.V->dofmap()->index_map, 3);
+    thrust::fill(thrust::device, fine_inverse_diagonal.array().begin(), fine_inverse_diagonal.array().end(), T(0));
     
-    fine_level.assemble_diagonal(level_3_inverse_diagonal);
+    fine_level.assemble_diagonal(fine_inverse_diagonal);
     
     // convert diag(A) to diag(A)^{-1}
-    thrust::transform(thrust::device, level_3_inverse_diagonal.array().begin(), level_3_inverse_diagonal.array().end(),
-      fine_level.bc_marker.begin(), level_3_inverse_diagonal.array().begin(), invert_jacobi_diagonal<T>());
+    thrust::transform(thrust::device, fine_inverse_diagonal.array().begin(), fine_inverse_diagonal.array().end(),
+      fine_level.bc_marker.begin(), fine_inverse_diagonal.array().begin(), invert_jacobi_diagonal<T>());
 
     if (jacobi_cg){
       // copy diag(A)^{-1} to CG solver
-      cg_solver.set_diag_inverse(level_3_inverse_diagonal);
+      cg_solver.set_diag_inverse(fine_inverse_diagonal);
     }
 
     device_synchronize();
-
-
-    // // testing jacobi smoother
-    // DeviceVector x_smoother_test(level_3.V->dofmap()->index_map, 3);
-    // DeviceVector level_3_Ax(level_3.V->dofmap()->index_map, 3);
-    // DeviceVector level_3_residual(level_3.V->dofmap()->index_map, 3);
-
-    // thrust::fill(thrust::device, x_smoother_test.array().begin(), x_smoother_test.array().end(), T(0));
-
-    // const T residual_before = residual_norm(level_3, x_smoother_test, b_device, level_3_Ax, level_3_residual);
-    // std::cout << "Residual norm before Jacobi smoothing = " << residual_before << "\n";
-
-    // constexpr int jacobi_steps = 1;
-    // constexpr T omega = T(0.3);
-
-    // jacobi_smooth(level_3, x_smoother_test, b_device, level_3_inverse_diagonal, level_3_Ax, level_3_residual, jacobi_steps, omega);
-
-    // const T residual_after = residual_norm(level_3, x_smoother_test, b_device, level_3_Ax, level_3_residual);
-    // std::cout << "Residual norm after Jacobi smoothing = " << residual_after << "\n";
-
 
     // timing 
     constexpr int runs = 1;
@@ -209,11 +177,9 @@ int main(int argc, char* argv[])
     std::cout << "Average solve time = " << avg_time << " seconds\n";
     std::cout << "Number of iterations = " << iterations << "\n";
 
-
     auto x = std::make_shared<fem::Function<T>>(fine_level.V);
 
     thrust::copy(x_device.array().begin(), x_device.array().end(), x->x()->array().begin());
-    thrust::copy(b_device.array().begin(), b_device.array().end(), b->x()->array().begin());
 
     std::cout << std::setprecision(17);
 
@@ -222,140 +188,6 @@ int main(int argc, char* argv[])
 
     std::cout << "b norm = "
               << dolfinx::la::norm(*b->x()) << "\n";
-
-              
-    // test functions for interpolation from coarse to fine function space
-    auto test_field = [](auto x)
-        -> std::pair<std::vector<T>, std::vector<std::size_t>>
-    {
-      const std::size_t np = x.extent(1);
-      std::vector<T> vals(3 * np, T(0));
-
-      for (std::size_t p = 0; p < np; ++p)
-      {
-        const T X = x(0, p);
-        const T Y = x(1, p);
-        const T Z = x(2, p);
-
-        vals[p]          = X * X + Y * Z;
-        vals[np + p]     = Y * Y + X * Z;
-        vals[2 * np + p] = Z * Z + X * Y;
-      }
-
-      return {vals, {3, np}};
-    };    
-    
-    auto u_coarse = std::make_shared<fem::Function<T>>(coarser_level.V);
-    auto u_fine = std::make_shared<fem::Function<T>>(fine_level.V);
-    u_coarse->interpolate(test_field);
-    u_fine->interpolate(test_field);
-
-    la::Vector<T, thrust::device_vector<T>> coarse_device(*(u_coarse->x()));
-    DeviceVector fine_from_coarse(fine_level.V->dofmap()->index_map, 3);
-    thrust::fill(thrust::device, fine_from_coarse.array().begin(), fine_from_coarse.array().end(), T(0));
-
-    // // testing prolongation //
-    // const std::size_t num_cells = V->dofmap()->map().extent(0);
-    // constexpr int transfer_threads = 256;
-    // const std::size_t total_transfer_tasks = num_cells * fine_dofs_kernel * 3;
-    // const std::size_t transfer_blocks = (total_transfer_tasks + transfer_threads - 1) / transfer_threads;
-
-    // thrust::fill(thrust::device, fine_from_coarse.array().begin(), fine_from_coarse.array().end(), T(0));
-
-    // p_transfer::prolong_cells<T, coarse_dofs_kernel, fine_dofs_kernel><<<static_cast<int>(transfer_blocks), transfer_threads>>>(
-    //   num_cells,
-    //   P_device.data().get(),
-    //   gpu_dofmap_coarse.map().data().get(),
-    //   gpu_dofmap.map().data().get(),
-    //   coarse_device.array().data().get(),
-    //   fine_from_coarse.array().data().get()
-    // );
-
-    // device_synchronize();
-
-    // // get the exact values of the fine function
-    // const auto fine_exact_values = u_fine->x()->array();
-
-    // // copy the GPU result to host for comparison
-    // std::vector<T> fine_from_coarse_host(fine_from_coarse.array().size());
-    // thrust::copy(fine_from_coarse.array().begin(), fine_from_coarse.array().end(), fine_from_coarse_host.begin());
-
-    // constexpr T tolerance = T(1e-12);
-    // T max_error = T(0);
-    // std::size_t failed_values = 0;
-
-    // // loop over fine dofs and compare the computed values from the coarse function to the exact values from the fine function
-    // for (std::size_t dof = 0; dof < fine_from_coarse_host.size(); ++dof)
-    // {
-    //   const T error = std::abs(fine_from_coarse_host[dof] - fine_exact_values[dof]);
-    //   max_error = std::max(max_error, error);
-
-    //   if (error > tolerance) failed_values++;
-    // }
-
-    // std::cout << std::scientific
-    //           << std::setprecision(3)
-    //           << "Maximum global prolongation error = "
-    //           << max_error << '\n';
-
-    // std::cout << "Number of failed values = "
-    //           << failed_values << '\n';
-
-
-    // // testing restriction //
-    // DeviceVector coarse_restricted(V_coarse->dofmap()->index_map, 3);
-    // thrust::fill(thrust::device, coarse_restricted.array().begin(), coarse_restricted.array().end(), T(0));
-
-    // const std::size_t total_restrict_tasks = num_fine_nodes * 3;
-    // const std::size_t restrict_blocks = (total_restrict_tasks + transfer_threads - 1) / transfer_threads;
-
-    // p_transfer::restrict_nodes<T, coarse_dofs_kernel, fine_dofs_kernel><<<static_cast<int>(restrict_blocks), transfer_threads>>>(
-    //   num_fine_nodes,
-    //   P_device.data().get(),
-    //   gpu_dofmap_coarse.map().data().get(),
-    //   owner_cell_device.data().get(),
-    //   owner_local_device.data().get(),
-    //   fine_from_coarse.array().data().get(),
-    //   coarse_restricted.array().data().get()
-    // );
-
-    // device_synchronize();
-
-    // const T left = thrust::inner_product(thrust::device, fine_from_coarse.array().begin(), fine_from_coarse.array().end(),
-    //   fine_from_coarse.array().begin(), T(0));
-    // const T right = thrust::inner_product(thrust::device, coarse_device.array().begin(), coarse_device.array().end(),
-    //   coarse_restricted.array().begin(), T(0));
-
-    // const T difference = std::abs(left - right);
-    // const T scale = std::max(std::max(T(1), std::abs(left)), std::abs(right));
-    // const T relative_error = difference / scale;
-
-    // std::cout << std::setprecision(8);
-    // std::cout << "(Px, Px) = " << left << "\n";
-    // std::cout << "(x, P^T Px) = " << right << "\n";
-    // std::cout << "Relative error = " << relative_error << "\n";
-
-    // ///// for visualisation in PARAVIEW /////
-    // // dolfinx function to hold the prolonged values for visualisation
-    // auto u_prolonged = std::make_shared<fem::Function<T>>(V);
-    // // copy GPU result into dolfinx function
-    // std::copy(fine_from_coarse_host.begin(), fine_from_coarse_host.end(), u_prolonged->x()->array().begin());
-    
-    // u_fine->name = "direct_fine";
-    // u_prolonged->name = "prolonged_fine";
-    
-    // #ifdef HAS_ADIOS2
-    // io::VTXWriter<U> transfer_writer(MPI_COMM_WORLD, "p_transfer.bp", {u_fine, u_prolonged}, "bp4");
-    // transfer_writer.write(0.0);
-    // #endif
-
-    // x->name = "displacement";
-
-    // #ifdef HAS_ADIOS2
-    // io::VTXWriter<U> solution_writer(MPI_COMM_WORLD, "cantilever.bp", {x}, "bp4");
-
-    // solution_writer.write(0.0);
-    // #endif
   }
 
   MPI_Finalize();
