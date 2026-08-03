@@ -2,6 +2,7 @@ from mpi4py import MPI
 import numpy as np
 import ufl
 import basix
+import time
 
 from basix.ufl import element
 from dolfinx import fem, mesh, la, io
@@ -22,7 +23,7 @@ polynomial_order = 5 # 2 or 3 for P2 or P3 tetrahedra
 quadrature_degree = 8
 jacobi = True # use Jacobi preconditioner in CG
 
-n = 10
+n = 5
 msh = create_box(
     MPI.COMM_WORLD,
     [np.array([0.0, 0.0, 0.0], dtype=dtype), 
@@ -90,27 +91,6 @@ def sigma(u):
 
 a = fem.form(ufl.inner(sigma(du), ufl.grad(v)) * dx, dtype=dtype)
 
-# # interpolated u
-# u = fem.Function(V, dtype=dtype)
-
-# def u_expr(x):
-#     values = np.zeros((gdim, x.shape[1]), dtype=dtype)
-#     values[0] = x[0] * np.sin(np.pi * x[0]) * np.cos(np.pi * x[1]) # multiplying by x[0] to satisfy boundary conditions 
-#     values[1] = x[0] * -np.cos(np.pi * x[0]) * np.sin(np.pi * x[1])
-#     values[2] = 0.0
-#     return values
-
-# np.set_printoptions(precision=3, suppress=True, linewidth=200)
-# u.interpolate(u_expr)
-
-# A = assemble_petsc_matrix(a, bcs=[bc])
-# A.assemble()
-
-# b = fem.Function(V, dtype=dtype)
-# b.x.array[:] = 0.0
-
-# A.mult(u.x.petsc_vec, b.x.petsc_vec) # compute b = A * u_exact
-
 # constant downwards force
 body_force = fem.Constant(msh, np.array((0.0, 0.0, -1e-3), dtype=dtype))
 
@@ -143,9 +123,22 @@ solver.setType(PETSc.KSP.Type.CG)
 solver.getPC().setType(PETSc.PC.Type.JACOBI if jacobi else PETSc.PC.Type.NONE)
 solver.setTolerances(rtol=1e-8, max_it=5000)
 solver.setInitialGuessNonzero(False)
+solver.setUp()
 
-solver.solve(b, x.x.petsc_vec)
+runs = 1
+solve_times = []
+
+for run in range(runs):
+    x.x.petsc_vec.set(0.0) # reset solution vector to zero
+    start_time = time.perf_counter()
+    solver.solve(b, x.x.petsc_vec)
+    end_time = time.perf_counter()
+    solve_times.append(end_time - start_time)
+
 x.x.scatter_forward() # update ghost values
+
+average_time = sum(solve_times) / runs
+print(f"Average solve time: {average_time:.6f}")
 
 # name shown in paraview
 x.name = "displacement"
@@ -155,7 +148,6 @@ writer = io.VTXWriter(msh.comm, "python_cantilever.bp", [x], "bp4")
 writer.write(0.0)
 writer.close()
 
-# print("Exact u norm = ", u.x.petsc_vec.norm())
 print("Computed x norm = ", x.x.petsc_vec.norm())
 print("b norm = ", b.norm())
 print("number of iterations = ", solver.getIterationNumber())

@@ -109,7 +109,7 @@ int main(int argc, char* argv[])
 
     // timing 
     constexpr int runs = 1;
-    constexpr int max_v_cycles = 100;
+    constexpr int max_v_cycles = 1000;
     constexpr T residual_tolerance = T(1e-8);
 
     std::vector<double> times;
