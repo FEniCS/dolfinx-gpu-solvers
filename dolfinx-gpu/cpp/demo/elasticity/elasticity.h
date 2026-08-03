@@ -268,19 +268,6 @@ __global__ void elasticity_diagonal(
     atomicAdd(&diagonal[dof], cell_diagonal);
   }
 
-  // // eventually could implement GPU kernel for right hand side, but for now we'll just use the CPU dolfinx version
-  // template <typename T, int nq, int dofs, int cells_per_block>
-  // __global__ void elasticity_body_force(
-  //   T* __restrict__ b,
-  //   const T* __restrict__ phi_data,
-  //   const T* __restrict__ wdetJ_entity,
-  //   const std::int32_t* __restrict__ cell_dofs,
-  //   const std::int32_t* __restrict__ cells,
-  //   int ncells,
-  //   const std::int8_t* __restrict__ bc_marker,
-  //   T force_x, T force_y, T force_z
-  // ){
-  // }
 
   template <int P>
   struct elasticity_traits;
@@ -318,6 +305,30 @@ __global__ void elasticity_diagonal(
       static constexpr int cells_per_block = 8;
     #else
       static constexpr int cells_per_block = 16; // number of cells per CUDA block
+    #endif
+  };
+
+  template <>
+  struct elasticity_traits<4>{
+    static constexpr int ndofs = 35; // number of scalar dofs per cell
+    static constexpr int quadrature_degree = 6; // quadrature degree for P4 tetrahedra
+    static constexpr int nq = 24;     // number of quadrature points per cell
+    #if defined(__HIP_PLATFORM_AMD__)
+      static constexpr int cells_per_block = 4;
+    #else
+      static constexpr int cells_per_block = 8; // number of cells per CUDA block
+    #endif
+  };
+
+  template <>
+  struct elasticity_traits<5>{
+    static constexpr int ndofs = 56; // number of scalar dofs per cell
+    static constexpr int quadrature_degree = 8; // quadrature degree for P5 tetrahedra
+    static constexpr int nq = 45;     // number of quadrature points per cell
+    #if defined(__HIP_PLATFORM_AMD__)
+      static constexpr int cells_per_block = 2;
+    #else
+      static constexpr int cells_per_block = 4; // number of cells per CUDA block
     #endif
   };
 

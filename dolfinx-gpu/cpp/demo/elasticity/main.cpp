@@ -37,6 +37,9 @@
 using namespace dolfinx;
 namespace po = boost::program_options;
 
+// polynomial orders from highest to lowest for p-multigrid
+using Hierarchy = PMultigridHierarchy<5, 4, 2>;
+
 int main(int argc, char* argv[])
 {
   MPI_Init(&argc, &argv);
@@ -83,7 +86,6 @@ int main(int argc, char* argv[])
       return marker;
     };
 
-    using Hierarchy = PMultigridHierarchy<3, 2, 1>;
     Hierarchy hierarchy(mesh, cell_list, left_boundary);
 
 

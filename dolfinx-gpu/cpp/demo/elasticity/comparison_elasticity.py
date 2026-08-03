@@ -18,8 +18,8 @@ dtype = np.float64 # float32 or float64
 
 ### Python comparison for GPU linear elasticity demo
 
-polynomial_order = 3 # 2 or 3 for P2 or P3 tetrahedra
-quadrature_degree = 2 * (polynomial_order - 1)
+polynomial_order = 5 # 2 or 3 for P2 or P3 tetrahedra
+quadrature_degree = 8
 jacobi = True # use Jacobi preconditioner in CG
 
 n = 10
