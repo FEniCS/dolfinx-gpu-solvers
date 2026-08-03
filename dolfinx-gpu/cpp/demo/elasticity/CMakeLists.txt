@@ -37,28 +37,8 @@ set(CMAKE_INCLUDE_CURRENT_DIR ON)
 # ---------------------------------------------------------------------------
 # Executable
 # ---------------------------------------------------------------------------
-add_custom_command(
-  OUTPUT
-    ${CMAKE_CURRENT_BINARY_DIR}/body_force.c
-
-  BYPRODUCTS
-    ${CMAKE_CURRENT_BINARY_DIR}/body_force.h
-
-  COMMAND
-    ffcx
-    ${CMAKE_CURRENT_SOURCE_DIR}/body_force.py
-    --scalar_type=float64
-
-  DEPENDS
-    ${CMAKE_CURRENT_SOURCE_DIR}/body_force.py
-
-  VERBATIM
-  COMMENT "Compiling body_force.py using FFCx"
-)
-
 add_executable(${PROJECT_NAME}
   main.cpp
-  ${CMAKE_CURRENT_BINARY_DIR}/body_force.c
 )
 
 target_link_libraries(${PROJECT_NAME} dolfinx Boost::program_options)

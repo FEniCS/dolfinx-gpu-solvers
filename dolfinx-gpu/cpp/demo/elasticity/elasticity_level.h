@@ -20,6 +20,7 @@
 
 #include "../../include/gpu_geometry.h"
 #include "elasticity.h"
+#include "load.h"
 
 using T = double; // float or double
 using U = dolfinx::scalar_value_t<T>;
@@ -138,6 +139,13 @@ class ElasticityLevel{
     {
       thrust::fill(thrust::device, diagonal.array().begin(), diagonal.array().end(), T(0));
       assemble_elasticity_diagonal<P>(diagonal, phi_data, K, wdetJ, gpu_dofmap.map(), _cell_list, bc_marker);
+    }
+
+    // assemble the body force vector for this level
+    void assemble_body_force(DeviceVector& b, T force_x, T force_y, T force_z) const
+    {
+      thrust::fill(thrust::device, b.array().begin(), b.array().end(), T(0));
+      launch_body_force_kernel<P>(b, phi_data, wdetJ, gpu_dofmap.map(), _cell_list, bc_marker, force_x, force_y, force_z);
     }
   
   private:
