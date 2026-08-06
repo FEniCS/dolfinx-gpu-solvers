@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include <thrust/device_vector.h>
 
 namespace detail
 {
@@ -11,8 +12,6 @@ namespace detail
     template <typename T>
     struct ConstantBodyForce
     {
-        static constexpr bool uses_coordinates = false;
-
         T force_x, force_y, force_z;
 
         __host__ __device__
@@ -30,8 +29,6 @@ namespace detail
     template <typename T>
     struct ManufacturedBodyForce
     {
-        static constexpr bool uses_coordinates = true;
-
         T lambda, mu;
 
         __host__ __device__
@@ -51,6 +48,23 @@ namespace detail
                 return -(lambda + mu) * X * dY * dZ;
             else
                 return T(2) * mu * (Y * Z + X * Z) + T(2) * (lambda + T(2) * mu) * X * Y;
+        }
+    };
+
+    template <typename T>
+    struct ManufacturedSolution
+    {
+        __host__ __device__
+        T operator()(int component, T x, T y, T z) const
+        {
+            if (component != 2)
+                return T(0);
+            
+            const T X = x * (T(1) - x);
+            const T Y = y * (T(1) - y);
+            const T Z = z * (T(1) - z);
+
+            return X * Y * Z;
         }
     };
 
@@ -121,6 +135,68 @@ namespace detail
             atomicAdd(&b[global_dof], cell_value); // atomic add to global vector
         }
     }
+
+    template <typename T, int nq, int ndofs, typename ExactSolution>
+    __global__ void l2_error_squared_kernel(
+        const T* __restrict__ solution, // computed solution vector
+        const T* __restrict__ phi_data, // basis function values at quadrature points
+        const T* __restrict__ wdetJ, // quadrature weights times determinant of Jacobian
+        const T* __restrict__ dof_coordinates, // physical coordinates of the dofs
+        const std::int32_t* __restrict__ cell_dofs, // mapping from cell to global dofs
+        const std::int32_t* __restrict__ cells, // list of cells to process
+        const std::size_t num_cells,
+        T* __restrict__ error_squared, // output: squared L2 error
+        ExactSolution exact_solution
+    )
+    {
+        const std::size_t cell_idx = static_cast<std::size_t>(blockIdx.x * blockDim.x + threadIdx.x); // global cell index
+        
+        if (cell_idx >= num_cells) return; // exit if out of bounds
+        
+        const std::size_t cell_id = static_cast<std::size_t>(cells[cell_idx]); // global cell index
+
+
+        T cell_error_squared = T(0); // local accumulator for this cell
+
+        // integrate the squared error over this cell
+        for (int q = 0; q < nq; ++q) // loop over quadrature points
+        {
+            T xq = T(0);
+            T yq = T(0);
+            T zq = T(0);
+
+            T uh_x = T(0);
+            T uh_y = T(0);
+            T uh_z = T(0);
+
+            for (int i = 0; i < ndofs; ++i) // loop over local basis functions
+            {
+                const std::int32_t global_node = cell_dofs[cell_id * ndofs + i]; // get global node index
+                const T phi_i = phi_data[q * ndofs + i]; // basis function value at quadrature point q for local node
+
+                xq += phi_i * dof_coordinates[3 * global_node + 0]; // interpolate x coordinate
+                yq += phi_i * dof_coordinates[3 * global_node + 1]; // interpolate y coordinate
+                zq += phi_i * dof_coordinates[3 * global_node + 2]; // interpolate z coordinate
+
+                uh_x += phi_i * solution[3 * global_node + 0]; // interpolate computed solution x component
+                uh_y += phi_i * solution[3 * global_node + 1]; // interpolate computed solution y component
+                uh_z += phi_i * solution[3 * global_node + 2]; // interpolate computed solution z component
+            }
+
+            const T exact_x = exact_solution(0, xq, yq, zq); // evaluate exact solution x component
+            const T exact_y = exact_solution(1, xq, yq, zq); // evaluate exact solution y component
+            const T exact_z = exact_solution(2, xq, yq, zq); // evaluate exact solution z component
+
+            const T error_x = uh_x - exact_x; // compute error in x component
+            const T error_y = uh_y - exact_y; // compute error in y component
+            const T error_z = uh_z - exact_z; // compute error in z component
+
+            const T point_error_squared = error_x * error_x + error_y * error_y + error_z * error_z; // squared error at this quadrature point
+            const T wj = wdetJ[cell_id * nq + q]; // weight times determinant of Jacobian for this cell and quadrature point
+            cell_error_squared += point_error_squared * wj; // accumulate scaled squared error
+        }
+        atomicAdd(error_squared, cell_error_squared); // accumulate into global error squared
+    }
 } // namespace detail
 
 
@@ -160,4 +236,44 @@ void launch_body_force_kernel(
         cells.size(),
         force
     );
+}
+
+
+template <int P, typename DeviceVector, typename ScalarContainer, typename IndexContainer, typename ExactSolution>
+typename DeviceVector::value_type launch_l2_error_squared_kernel(
+    const DeviceVector& solution, // computed solution vector
+    const ScalarContainer& phi_data, // basis function values at quadrature points
+    const ScalarContainer& wdetJ, // quadrature weights times determinant of Jacobian
+    const ScalarContainer& dof_coordinates, // physical coordinates of the dofs
+    const IndexContainer& cell_dofs, // mapping from cell to global dofs
+    const IndexContainer& cells, // list of cells to process
+    ExactSolution exact_solution // functor to evaluate the exact solution at a given point
+)
+{
+    using T = typename DeviceVector::value_type; // deduce the scalar type from the device vector
+    
+    constexpr int nq = detail::elasticity_traits<P>::nq; // number of quadrature points for P-th order elements
+    constexpr int ndofs = detail::elasticity_traits<P>::ndofs; // number of local degrees of freedom
+
+    thrust::device_vector<T> error_squared_device(1, T(0));
+
+    if (cells.size() == 0) return T(0); // if no cells, return zero error
+
+    constexpr int block_size = 128; // number of threads per block
+    const int grid_size = (cells.size() + block_size - 1) / block_size; // number of blocks needed
+
+    detail::l2_error_squared_kernel<T, nq, ndofs, ExactSolution><<<grid_size, block_size>>>(
+        solution.array().data().get(), 
+        phi_data.data().get(), 
+        wdetJ.data().get(), 
+        dof_coordinates.data().get(), 
+        cell_dofs.data().get(), 
+        cells.data().get(), 
+        cells.size(),
+        error_squared_device.data().get(),
+        exact_solution
+    );
+
+    const T error_squared_host = error_squared_device[0];
+    return error_squared_host;
 }

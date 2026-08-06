@@ -99,7 +99,7 @@ int main(int argc, char* argv[])
 
     using DeviceVector = typename Hierarchy::DeviceVector;
     DeviceVector b_device(fine_level.V->dofmap()->index_map, 3);
-    fine_level.assemble_body_force(b_device, detail::ConstantBodyForce<T>{T(0), T(0), T(-1.0e-3)}); // assemble body force vector with force in negative z direction
+    fine_level.assemble_body_force(b_device, detail::ManufacturedBodyForce<T>{T(1), T(1)}); // assemble body force vector with force in negative z direction
 
     // 0 initial guess
     DeviceVector x_device(fine_level.V->dofmap()->index_map, 3);
@@ -160,6 +160,11 @@ int main(int argc, char* argv[])
     auto x = std::make_shared<fem::Function<T>>(fine_level.V);
 
     thrust::copy(x_device.array().begin(), x_device.array().end(), x->x()->array().begin());
+
+    const T local_error_squared = fine_level.compute_l2_error_squared(x_device, detail::ManufacturedSolution<T>{});
+    const T l2_error = std::sqrt(std::max(local_error_squared, T(0)));
+
+    std::cout << "L2 error: " << l2_error << "\n";
 
     std::cout << std::setprecision(17);
 

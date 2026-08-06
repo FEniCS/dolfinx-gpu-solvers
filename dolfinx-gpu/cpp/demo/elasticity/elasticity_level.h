@@ -147,8 +147,13 @@ class ElasticityLevel{
     template <typename ForceEvaluator>
     void assemble_body_force(DeviceVector& b, ForceEvaluator force) const
     {
-      thrust::fill(thrust::device, b.array().begin(), b.array().end(), T(0));
       launch_body_force_kernel<P>(b, phi_data, wdetJ, dof_coordinates, gpu_dofmap.map(), _cell_list, bc_marker, force);
+    }
+
+    template <typename ExactSolution>
+    T compute_l2_error_squared(const DeviceVector& solution, ExactSolution exact_solution) const
+    {
+      return launch_l2_error_squared_kernel<P>(solution, phi_data, wdetJ, dof_coordinates, gpu_dofmap.map(), _cell_list, exact_solution);
     }
   
   private:

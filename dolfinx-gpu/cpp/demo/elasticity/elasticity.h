@@ -323,8 +323,8 @@ __global__ void elasticity_diagonal(
   template <>
   struct elasticity_traits<5>{
     static constexpr int ndofs = 56; // number of scalar dofs per cell
-    static constexpr int quadrature_degree = 8; // quadrature degree for P5 tetrahedra
-    static constexpr int nq = 45;     // number of quadrature points per cell
+    static constexpr int quadrature_degree = 12; // quadrature degree for P5 tetrahedra
+    static constexpr int nq = 122;     // number of quadrature points per cell
     #if defined(__HIP_PLATFORM_AMD__)
       static constexpr int cells_per_block = 2;
     #else
