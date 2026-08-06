@@ -101,6 +101,7 @@ class ElasticityLevel{
     DeviceScalarVector phi_data;
     DeviceScalarVector K;
     DeviceScalarVector wdetJ;
+    DeviceScalarVector dof_coordinates;
     DeviceMarkerVector bc_marker;
     std::vector<std::int32_t> bc_nodes;
 
@@ -123,6 +124,7 @@ class ElasticityLevel{
     {
       build_geometry();
       build_basis();
+      build_dof_coordinates();
       build_bc_marker(boundary_locator);
     }
 
@@ -142,10 +144,11 @@ class ElasticityLevel{
     }
 
     // assemble the body force vector for this level
-    void assemble_body_force(DeviceVector& b, T force_x, T force_y, T force_z) const
+    template <typename ForceEvaluator>
+    void assemble_body_force(DeviceVector& b, ForceEvaluator force) const
     {
       thrust::fill(thrust::device, b.array().begin(), b.array().end(), T(0));
-      launch_body_force_kernel<P>(b, phi_data, wdetJ, gpu_dofmap.map(), _cell_list, bc_marker, force_x, force_y, force_z);
+      launch_body_force_kernel<P>(b, phi_data, wdetJ, dof_coordinates, gpu_dofmap.map(), _cell_list, bc_marker, force);
     }
   
   private:
@@ -188,5 +191,10 @@ class ElasticityLevel{
       }
 
       bc_marker = DeviceMarkerVector(bc_marker_host.begin(), bc_marker_host.end());
+    }
+
+    void build_dof_coordinates(){
+      const std::vector<T> coordinates_host = V->tabulate_dof_coordinates(false); // asks dolfinx to get physical coordinates of the nodes in this function space
+      dof_coordinates.assign(coordinates_host.begin(), coordinates_host.end()); // copy to device vector
     }
 };

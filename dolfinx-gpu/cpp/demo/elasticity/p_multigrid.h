@@ -111,7 +111,7 @@ namespace p_transfer
 
             const T P_ij = interpolation[fine_i * coarse_dofs + coarse_j]; // read one interpolation matrix entry
             
-            if (!coarse_bc_marker[coarse_node]){ // only add contribution if coarse node is not clamped
+            if (!coarse_bc_marker[coarse_dof]){ // only add contribution if coarse node is not clamped
               atomicAdd(&coarse_values[coarse_dof], P_ij * fine_value); // add contribution to the coarse value
             }
         }

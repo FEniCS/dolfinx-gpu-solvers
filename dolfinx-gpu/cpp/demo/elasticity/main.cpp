@@ -15,6 +15,7 @@
 #include <memory>
 #include <numeric>
 #include <vector>
+#include <fstream>
 
 #include <boost/program_options.hpp>
 #include <dolfinx.h>
@@ -73,32 +74,32 @@ int main(int argc, char* argv[])
     thrust::device_vector<std::int32_t> cell_list(cell_list_host.begin(),
                                                    cell_list_host.end());
 
-    auto left_boundary = [](auto x){ // x is a table of coordinates
+    auto boundary = [](auto x){ // x is a table of coordinates
       std::vector<std::int8_t> marker(x.extent(1), false); // create a list called marker which has one entry for each point being checked
       // mark points on the left boundary (x=0) as true
       for (std::size_t p = 0; p < x.extent(1); ++p) // loop over all points
       {
-        if (std::abs(x(0, p)) < 1e-8) // check if x coordiante is 0/close to 0
-        {
-          marker[p] = true; // mark this point as true
-        }
+        // if (std::abs(x(0, p)) < 1e-8) // check if x coordiante is 0/close to 0
+        // {
+        //   marker[p] = true; // mark this point as true
+        // }
+
+        marker[p] = std::abs(x(0, p)) < 1e-8
+          || std::abs(x(1, p)) < 1e-8
+          || std::abs(x(2, p)) < 1e-8
+          || std::abs(x(0, p) - 1.0) < 1e-8
+          || std::abs(x(1, p) - 1.0) < 1e-8
+          || std::abs(x(2, p) - 1.0) < 1e-8;
       }
       return marker;
     };
 
-    Hierarchy hierarchy(mesh, cell_list, left_boundary);
-
-
-    // temp variables to keep rest of code working
+    Hierarchy hierarchy(mesh, cell_list, boundary);
     auto& fine_level = hierarchy.level;
 
-
-    // -----------------------------------------------------------------------
-    // Functions
-    // -----------------------------------------------------------------------
     using DeviceVector = typename Hierarchy::DeviceVector;
     DeviceVector b_device(fine_level.V->dofmap()->index_map, 3);
-    fine_level.assemble_body_force(b_device, 0.0, 0.0, -1.0e-3); // assemble body force vector with force in negative z direction
+    fine_level.assemble_body_force(b_device, detail::ConstantBodyForce<T>{T(0), T(0), T(-1.0e-3)}); // assemble body force vector with force in negative z direction
 
     // 0 initial guess
     DeviceVector x_device(fine_level.V->dofmap()->index_map, 3);
@@ -173,6 +174,15 @@ int main(int argc, char* argv[])
 
     std::cout << "b norm = "
               << dolfinx::la::norm(*b->x()) << "\n";
+
+    ///// for visualisation in PARAVIEW /////
+    #ifdef HAS_ADIOS2
+      x->name = "displacement";
+      io::VTXWriter<U> writer(
+          MPI_COMM_WORLD, "cantilever.bp", {x}, "bp4");
+      writer.write(0.0);
+    #endif
+
   }
 
   MPI_Finalize();
