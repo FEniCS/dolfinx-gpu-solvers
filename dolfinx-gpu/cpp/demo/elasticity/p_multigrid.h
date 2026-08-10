@@ -2,7 +2,8 @@
 
 #include "elasticity_level.h"
 #include "jacobi.h"
-#include "cg.h"
+#include "coarse_elasticity.h"
+#include "util.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -12,6 +13,12 @@
 #include <vector>
 
 #include <basix/interpolation.h>
+#include <dolfinx/fem/petsc.h>
+#include <dolfinx/la/petsc.h>
+
+#include <petscksp.h>
+#include <petscmat.h>
+#include <petscpc.h>
 
 #include <thrust/execution_policy.h>
 #include <thrust/fill.h>
@@ -117,6 +124,24 @@ namespace p_transfer
         }
     }
 } // namespace p_transfer
+
+
+template <int P>
+const ufcx_form* get_coarse_ufcx_form()
+{
+  if constexpr (P == 1)
+    return form_coarse_elasticity_a1;
+  else if constexpr (P == 2)
+    return form_coarse_elasticity_a2;
+  else if constexpr (P == 3)
+    return form_coarse_elasticity_a3;
+  else if constexpr (P == 4)
+    return form_coarse_elasticity_a4;
+  else if constexpr (P == 5)
+    return form_coarse_elasticity_a5;
+  else
+    throw std::runtime_error("No coarse elasticity form available for polynomial degree " + std::to_string(P));
+}
 
 
 // forward declaration of p-multigrid hierarchy that lets you describe exact sequence of polynomial levels
@@ -323,45 +348,174 @@ class PMultigridHierarchy<LastCoarserP>{
     using DeviceVector = typename ElasticityLevel<LastCoarserP>::DeviceVector;
 
     ElasticityLevel<LastCoarserP> level;
-    DeviceVector diagonal_inverse; // inverse jacobi diagonal for coarse cg solver
-    elasticity::CGSolver<DeviceVector> coarse_solver; // coarse cg solver
+    
+  private:
 
+    dolfinx::fem::DirichletBC<T> coarse_bc; // homogeneous displacement boundary condition
+    dolfinx::fem::Form<T> coarse_form; // dolfinx representation of assembled elasticity form
+
+    Mat coarse_A = nullptr; // PETSc matrix for coarse solve
+    Vec coarse_rhs_petsc = nullptr; // PETSc vector for coarse solve rhs
+    Vec coarse_solution_petsc = nullptr; // PETSc vector for coarse solve solution
+    KSP coarse_solver = nullptr; // PETSc KSP solver for coarse solve
+
+    // physical coordinates of the coarse mesh nodes
+    std::vector<T> coarse_coordinates;
+
+  public:
     template <typename MeshPtr, typename CellList, typename BoundaryLocator>
     PMultigridHierarchy(
       const MeshPtr& mesh_ptr,
       const CellList& cell_list,
       const BoundaryLocator& boundary_locator)
       : level(mesh_ptr, cell_list, boundary_locator),
-        diagonal_inverse(level.V->dofmap()->index_map, 3),
-        coarse_solver(level.V->dofmap()->index_map, 3)
+        coarse_bc(std::array<T, 3>{T(0), T(0), T(0)}, level.bc_nodes, level.V),
+        coarse_form(dolfinx::fem::create_form<T>(*get_coarse_ufcx_form<LastCoarserP>(), {level.V, level.V}, {}, {}, {}, {}, level.V->mesh())),
+        coarse_coordinates(level.V->tabulate_dof_coordinates(false))
     {
-      // assemble diag(A) on coarsest level
-      level.assemble_diagonal(diagonal_inverse);
-
-      // compute the inverse of the diagonal
-      thrust::transform(
-        thrust::device, 
-        diagonal_inverse.array().begin(), 
-        diagonal_inverse.array().end(),
-        level.bc_marker.begin(),
-        diagonal_inverse.array().begin(),
-        invert_jacobi_diagonal<T>{}
-      );
-
-      // set the coarse solver's diagonal inverse
-      coarse_solver.set_diag_inverse(diagonal_inverse);
-
-      coarse_solver.set_max_iterations(1000);
-      coarse_solver.set_tolerance(T(1e-8));
+      assemble_coarse_matrix();
+      setup_gamg();
+      create_petsc_vectors();
     }
 
+    ~PMultigridHierarchy()
+    {
+      KSPDestroy(&coarse_solver);
+      MatDestroy(&coarse_A);
+      VecDestroy(&coarse_rhs_petsc);
+      VecDestroy(&coarse_solution_petsc);
+    }
+    
     template <typename Vector>
     void v_cycle(Vector& solution, const Vector& rhs)
     {
-      // solve the coarsest level problem directly //
-      // for now, could just do CG
-      // PETSc PCGAMG
+      // solve the coarsest level problem directly using PETSc GAMG
 
-      coarse_solver.solve(level, solution, rhs, true);
+      // Finish CUDA/HIP restriction before PETSc reads rhs
+       device_synchronize();
+
+      #if defined(__HIP_PLATFORM_AMD__)
+        VecHIPPlaceArray(coarse_rhs_petsc, rhs.array().data().get());
+        VecHIPPlaceArray(coarse_solution_petsc, solution.array().data().get());
+      #else
+        VecCUDAPlaceArray(coarse_rhs_petsc, rhs.array().data().get());
+        VecCUDAPlaceArray(coarse_solution_petsc, solution.array().data().get());
+      #endif
+        KSPSolve(coarse_solver, coarse_rhs_petsc, coarse_solution_petsc);
+      #if defined(__HIP_PLATFORM_AMD__)
+        VecHIPResetArray(coarse_rhs_petsc);
+        VecHIPResetArray(coarse_solution_petsc);
+      #else
+        VecCUDAResetArray(coarse_rhs_petsc);
+        VecCUDAResetArray(coarse_solution_petsc);
+      #endif
+        // Ensure PETSc coarse correction is ready before prolongation
+        device_synchronize();
+    } 
+
+
+  private:
+
+    void create_petsc_vectors()
+    {
+      MPI_Comm comm = level.V->mesh()->comm();
+
+      const auto index_map = level.V->dofmap()->index_map;
+
+      const PetscInt bs = level.V->dofmap()->index_map_bs();
+      const PetscInt local_size = bs * static_cast<PetscInt>(index_map->size_local());
+      const PetscInt global_size = bs * static_cast<PetscInt>(index_map->size_global());
+
+    #if defined(__HIP_PLATFORM_AMD__)
+      VecCreateMPIHIPWithArray(
+          comm,
+          bs,
+          local_size,
+          global_size,
+          nullptr,
+          &coarse_rhs_petsc);
+
+      VecCreateMPIHIPWithArray(
+          comm,
+          bs,
+          local_size,
+          global_size,
+          nullptr,
+          &coarse_solution_petsc);
+    #else
+      VecCreateMPICUDAWithArray(
+          comm,
+          bs,
+          local_size,
+          global_size,
+          nullptr,
+          &coarse_rhs_petsc);
+
+      VecCreateMPICUDAWithArray(
+          comm,
+          bs,
+          local_size,
+          global_size,
+          nullptr,
+          &coarse_solution_petsc);
+    #endif
     }
+
+
+    void assemble_coarse_matrix()
+    {
+      // build sparsity pattern
+      auto pattern = dolfinx::fem::create_sparsity_pattern(coarse_form);
+      pattern.finalize();
+
+      #if defined(__HIP_PLATFORM_AMD__)
+          coarse_A = dolfinx::la::petsc::create_matrix(level.V->mesh()->comm(), pattern, "aijhipsparse");
+      #else
+          coarse_A = dolfinx::la::petsc::create_matrix(level.V->mesh()->comm(), pattern, "aijcusparse");
+      #endif
+
+      MatZeroEntries(coarse_A);
+
+      // assemble FE matrix
+      dolfinx::fem::assemble_matrix(dolfinx::la::petsc::Matrix::set_block_fn(coarse_A, ADD_VALUES), coarse_form, {coarse_bc});
+
+      // flush before setting BC diagonal
+      MatAssemblyBegin(coarse_A, MAT_FLUSH_ASSEMBLY);
+      MatAssemblyEnd(coarse_A, MAT_FLUSH_ASSEMBLY);
+
+      // set Dirichlet diagonal entries to 1
+      dolfinx::fem::set_diagonal<T>(dolfinx::la::petsc::Matrix::set_fn(coarse_A, INSERT_VALUES), *level.V, {coarse_bc});
+
+      MatAssemblyBegin(coarse_A, MAT_FINAL_ASSEMBLY);
+      MatAssemblyEnd(coarse_A, MAT_FINAL_ASSEMBLY);
+
+      // 3 displacement components per node
+      MatSetBlockSize(coarse_A, level.V->dofmap()->index_map_bs());
+      }
+
+
+      void setup_gamg()
+      {
+        // set up the GAMG solver
+
+        MPI_Comm comm = level.V->mesh()->comm();
+        KSPCreate(comm, &coarse_solver);
+
+        KSPSetOperators(coarse_solver, coarse_A, coarse_A); // matrix for coarse solve
+        KSPSetOptionsPrefix(coarse_solver, "coarse_"); // set prefix for command line options
+
+        KSPSetType(coarse_solver, KSPPREONLY); // apply preconditioner once i.e. solver not iterative
+        
+        PC pc;
+        KSPGetPC(coarse_solver, &pc);
+        PCSetType(pc, PCGAMG);
+
+        KSPSetFromOptions(coarse_solver); // apply any command line options
+        KSPGetPC(coarse_solver, &pc);
+
+        const PetscInt num_owned_nodes = static_cast<PetscInt>(level.V->dofmap()->index_map->size_local());
+        PCSetCoordinates(pc, 3, num_owned_nodes, coarse_coordinates.data()); // give GAMG xyz coordinates of displacement nodes
+
+        KSPSetUp(coarse_solver); // actually construct the AMG hierarchy 
+      }
   };

@@ -37,8 +37,29 @@ set(CMAKE_INCLUDE_CURRENT_DIR ON)
 # ---------------------------------------------------------------------------
 # Executable
 # ---------------------------------------------------------------------------
+add_custom_command(
+  OUTPUT
+    ${CMAKE_CURRENT_BINARY_DIR}/coarse_elasticity.c
+    ${CMAKE_CURRENT_BINARY_DIR}/coarse_elasticity.h
+
+  COMMAND
+    ffcx ${CMAKE_CURRENT_SOURCE_DIR}/coarse_elasticity.py
+
+  WORKING_DIRECTORY
+    ${CMAKE_CURRENT_BINARY_DIR}
+
+  DEPENDS
+    ${CMAKE_CURRENT_SOURCE_DIR}/coarse_elasticity.py
+
+  COMMENT
+    "Compiling coarse_elasticity.py using FFCx"
+
+  VERBATIM
+)
+
 add_executable(${PROJECT_NAME}
   main.cpp
+  ${CMAKE_CURRENT_BINARY_DIR}/coarse_elasticity.c
 )
 
 target_link_libraries(${PROJECT_NAME} dolfinx Boost::program_options)

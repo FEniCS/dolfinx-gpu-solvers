@@ -21,6 +21,7 @@
 #include <dolfinx.h>
 #include <dolfinx/fem/Constant.h>
 #include <dolfinx/la/Vector.h>
+#include <petscsys.h>
 
 #include <thrust/copy.h>
 #include <thrust/device_vector.h>
@@ -43,8 +44,12 @@ using Hierarchy = PMultigridHierarchy<5, 4, 2>;
 
 int main(int argc, char* argv[])
 {
-  MPI_Init(&argc, &argv);
   dolfinx::init_logging(argc, argv);
+  PetscInitialize(&argc, &argv, nullptr, nullptr);
+
+  PetscInt petsc_n;
+  PetscBool n_found;
+  PetscOptionsGetInt(nullptr, nullptr, "--n", &petsc_n, &n_found);
 
   po::options_description desc("Options");
   desc.add_options()("help,h", "Print usage message")(
@@ -119,6 +124,7 @@ int main(int argc, char* argv[])
     int v_cycles = 0;
     T initial_residual_norm = T(0);
     T final_residual_norm = T(0);
+    T relative_residual_norm = T(0);
 
     std::cout << std::setprecision(17);
 
@@ -129,6 +135,11 @@ int main(int argc, char* argv[])
       device_synchronize();
 
       initial_residual_norm = residual_norm(fine_level, x_device, b_device, fine_Ax, fine_residual);
+
+      std::ofstream residual_file("relative_residual.csv");
+
+      residual_file << "v_cycle,relative_residual\n";
+
       final_residual_norm = initial_residual_norm;
       v_cycles = 0;
 
@@ -140,6 +151,10 @@ int main(int argc, char* argv[])
       {
         hierarchy.v_cycle(x_device, b_device);
         final_residual_norm = residual_norm(fine_level, x_device, b_device, fine_Ax, fine_residual);
+        relative_residual_norm = final_residual_norm / initial_residual_norm;
+
+        residual_file << v_cycles + 1 << "," << std::setprecision(17) << relative_residual_norm << "\n";
+
         ++v_cycles;
       }
       
@@ -156,6 +171,7 @@ int main(int argc, char* argv[])
 
     std::cout << "Initial residual norm: " << initial_residual_norm << "\n";
     std::cout << "Final residual norm: " << final_residual_norm << "\n";
+    std::cout << "Relative residual norm: " << relative_residual_norm << "\n";
 
     auto x = std::make_shared<fem::Function<T>>(fine_level.V);
 
@@ -190,6 +206,6 @@ int main(int argc, char* argv[])
 
   }
 
-  MPI_Finalize();
+  PetscFinalize();
   return 0;
 }
