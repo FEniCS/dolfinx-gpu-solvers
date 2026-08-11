@@ -154,6 +154,10 @@ class PMultigridHierarchy<FineP, NextCoarserP, RemainingOrders...>{
   public:
     ElasticityLevel<FineP> level; // current polynomial level
     PMultigridHierarchy<NextCoarserP, RemainingOrders...> coarser; // hierachy beginning at the next lower polynomial level
+
+    int pre_smooth_steps = 3; // number of Jacobi smoothing steps before restriction
+    int post_smooth_steps = 3; // number of Jacobi smoothing steps after prolongation
+
     thrust::device_vector<T> interpolation; // interpolation matrix from level NextCoarserP to level FineP
 
     using DeviceIndexVector = thrust::device_vector<std::int32_t>;
@@ -257,12 +261,25 @@ class PMultigridHierarchy<FineP, NextCoarserP, RemainingOrders...>{
         );
     }
 
+    void set_smoothing_steps(int order, int pre, int post)
+    {
+      if (pre < 0 || post < 0)
+        throw std::runtime_error("Number of smoothing steps must be non-negative");
+
+      if (order == FineP)
+      {
+        pre_smooth_steps = pre;
+        post_smooth_steps = post;
+        return;
+      }
+
+      coarser.set_smoothing_steps(order, pre, post);
+    }
+
 
     template <typename Vector>
     void v_cycle(Vector& solution, const Vector& rhs)
     {
-      constexpr int pre_smooth_steps = 3;
-      constexpr int post_smooth_steps = 3;
       constexpr T omega = T(0.3); // damping factor
 
       // pre-smoothing on level FineP
@@ -385,6 +402,16 @@ class PMultigridHierarchy<LastCoarserP>{
       VecDestroy(&coarse_rhs_petsc);
       VecDestroy(&coarse_solution_petsc);
     }
+
+    void set_smoothing_steps(int order, int pre, int post)
+    {
+      if (order == LastCoarserP)
+      {
+        throw std::runtime_error("Cannot set smoothing steps for the coarsest level");
+      }
+
+      throw std::runtime_error("Polynomial order " + std::to_string(order) + " not found in the hierarchy");
+    }
     
     template <typename Vector>
     void v_cycle(Vector& solution, const Vector& rhs)
@@ -504,7 +531,10 @@ class PMultigridHierarchy<LastCoarserP>{
         KSPSetOperators(coarse_solver, coarse_A, coarse_A); // matrix for coarse solve
         KSPSetOptionsPrefix(coarse_solver, "coarse_"); // set prefix for command line options
 
-        KSPSetType(coarse_solver, KSPPREONLY); // apply preconditioner once i.e. solver not iterative
+        KSPSetType(coarse_solver, KSPRICHARDSON); // apply GAMG as a preconditioner to Richardson iteration
+        // 3 Richardson iterations
+        KSPSetNormType(coarse_solver, KSP_NORM_NONE); // don't compute residual norm for coarse solve
+        KSPSetTolerances(coarse_solver, PETSC_CURRENT, PETSC_CURRENT, PETSC_CURRENT, 3); // set tolerances for coarse solve
         
         PC pc;
         KSPGetPC(coarse_solver, &pc);

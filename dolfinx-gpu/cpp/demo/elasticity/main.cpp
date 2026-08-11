@@ -30,7 +30,6 @@
 #include <thrust/transform.h>
 
 #include "body_force.h"
-#include "cg.h"
 #include "jacobi.h"
 #include "p_multigrid.h"
 #include "util.h"
@@ -41,6 +40,19 @@ namespace po = boost::program_options;
 
 // polynomial orders from highest to lowest for p-multigrid
 using Hierarchy = PMultigridHierarchy<5, 4, 2>;
+
+// p-multigrid smoothing configuration
+struct SmoothingConfig
+{
+    int order;
+    int pre;
+    int post;
+};
+
+constexpr std::array<SmoothingConfig, 2> smoothing_config = {{
+    {5, 3, 3}, // 5th order: 3 pre-smooth, 3 post-smooth
+    {4, 3, 3}, // 4th order: 3 pre-smooth, 3 post-smooth
+}};
 
 int main(int argc, char* argv[])
 {
@@ -100,6 +112,12 @@ int main(int argc, char* argv[])
     };
 
     Hierarchy hierarchy(mesh, cell_list, boundary);
+
+    for (const auto& config : smoothing_config)
+    {
+        hierarchy.set_smoothing_steps(config.order, config.pre, config.post);
+    }
+
     auto& fine_level = hierarchy.level;
 
     using DeviceVector = typename Hierarchy::DeviceVector;
@@ -114,7 +132,7 @@ int main(int argc, char* argv[])
     DeviceVector fine_residual(fine_level.V->dofmap()->index_map, 3);
 
     // timing 
-    constexpr int runs = 1;
+    constexpr int runs = 5;
     constexpr int max_v_cycles = 1000;
     constexpr T residual_tolerance = T(1e-8);
 
@@ -153,7 +171,7 @@ int main(int argc, char* argv[])
         final_residual_norm = residual_norm(fine_level, x_device, b_device, fine_Ax, fine_residual);
         relative_residual_norm = final_residual_norm / initial_residual_norm;
 
-        residual_file << v_cycles + 1 << "," << std::setprecision(17) << relative_residual_norm << "\n";
+        // residual_file << v_cycles + 1 << "," << std::setprecision(17) << relative_residual_norm << "\n";
 
         ++v_cycles;
       }
