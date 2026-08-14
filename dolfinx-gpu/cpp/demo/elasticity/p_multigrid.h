@@ -531,10 +531,9 @@ class PMultigridHierarchy<LastCoarserP>{
         KSPSetOperators(coarse_solver, coarse_A, coarse_A); // matrix for coarse solve
         KSPSetOptionsPrefix(coarse_solver, "coarse_"); // set prefix for command line options
 
-        KSPSetType(coarse_solver, KSPRICHARDSON); // apply GAMG as a preconditioner to Richardson iteration
-        // 3 Richardson iterations
-        KSPSetNormType(coarse_solver, KSP_NORM_NONE); // don't compute residual norm for coarse solve
-        KSPSetTolerances(coarse_solver, PETSC_CURRENT, PETSC_CURRENT, PETSC_CURRENT, 3); // set tolerances for coarse solve
+        KSPSetType(coarse_solver, KSPCG); // apply GAMG as a preconditioner to CG iteration
+        KSPSetNormType(coarse_solver, KSP_NORM_UNPRECONDITIONED);
+        KSPSetTolerances(coarse_solver, 1e-8, PETSC_DEFAULT, PETSC_DEFAULT, 10); // set tolerances for coarse solve
         
         PC pc;
         KSPGetPC(coarse_solver, &pc);

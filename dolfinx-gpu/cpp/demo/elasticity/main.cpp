@@ -39,7 +39,7 @@ using namespace dolfinx;
 namespace po = boost::program_options;
 
 // polynomial orders from highest to lowest for p-multigrid
-using Hierarchy = PMultigridHierarchy<5, 4, 2>;
+using Hierarchy = PMultigridHierarchy<5, 4, 2, 1>;
 
 // p-multigrid smoothing configuration
 struct SmoothingConfig
@@ -49,10 +49,11 @@ struct SmoothingConfig
     int post;
 };
 
-constexpr std::array<SmoothingConfig, 2> smoothing_config = {{
-    {5, 3, 3}, // 5th order: 3 pre-smooth, 3 post-smooth
-    {4, 3, 3}, // 4th order: 3 pre-smooth, 3 post-smooth
-}};
+constexpr std::array smoothing_config = {
+    SmoothingConfig{5, 3, 3},
+    SmoothingConfig{4, 3, 3},
+    SmoothingConfig{2, 3, 3},
+};
 
 int main(int argc, char* argv[])
 {
@@ -83,6 +84,21 @@ int main(int argc, char* argv[])
     auto mesh = std::make_shared<mesh::Mesh<U>>(mesh::create_box<U>(
         MPI_COMM_WORLD, {{{0.0, 0.0, 0.0}, {1.0, 1.0, 1.0}}}, {n, n, n},
         mesh::CellType::tetrahedron, part));
+
+
+    auto x = mesh->geometry().x();
+    constexpr U amplitude = U(0.15);
+    constexpr U pi = U(3.14159265358979323846);
+
+    for (std::size_t i = 0; i < x.size()/3; ++i)
+    {
+      const U X = x[3 * i + 0];
+      const U Y = x[3 * i + 1];
+      const U Z = x[3 * i + 2];
+
+      x[3 * i + 0] = X + amplitude * std::sin(pi * X) * std::sin(pi * Y) * std::sin(pi * Z);
+    }
+
 
     // Create list of all cells
     std::vector<std::int32_t> cell_list_host(
@@ -191,9 +207,9 @@ int main(int argc, char* argv[])
     std::cout << "Final residual norm: " << final_residual_norm << "\n";
     std::cout << "Relative residual norm: " << relative_residual_norm << "\n";
 
-    auto x = std::make_shared<fem::Function<T>>(fine_level.V);
+    auto x2 = std::make_shared<fem::Function<T>>(fine_level.V);
 
-    thrust::copy(x_device.array().begin(), x_device.array().end(), x->x()->array().begin());
+    thrust::copy(x_device.array().begin(), x_device.array().end(), x2->x()->array().begin());
 
     const T local_error_squared = fine_level.compute_l2_error_squared(x_device, detail::ManufacturedSolution<T>{});
     const T l2_error = std::sqrt(std::max(local_error_squared, T(0)));
@@ -203,7 +219,7 @@ int main(int argc, char* argv[])
     std::cout << std::setprecision(17);
 
     std::cout << "Computed x norm = "
-              << dolfinx::la::norm(*x->x()) << "\n";
+              << dolfinx::la::norm(*x2->x()) << "\n";
 
     auto b = std::make_shared<fem::Function<T>>(fine_level.V);
     
@@ -216,9 +232,9 @@ int main(int argc, char* argv[])
 
     ///// for visualisation in PARAVIEW /////
     #ifdef HAS_ADIOS2
-      x->name = "displacement";
+      x2->name = "displacement";
       io::VTXWriter<U> writer(
-          MPI_COMM_WORLD, "cantilever.bp", {x}, "bp4");
+          MPI_COMM_WORLD, "cantilever.bp", {x2}, "bp4");
       writer.write(0.0);
     #endif
 
