@@ -9,7 +9,7 @@ cmake_minimum_required(VERSION 3.21)
 set(PROJECT_NAME demo_elasticity)
 project(${PROJECT_NAME} LANGUAGES C CXX)
 
-if(NOT TARGET dolfinx)
+if(NOT TARGET dolfinx::dolfinx)
   find_package(DOLFINX REQUIRED)
 endif()
 find_package(Boost 1.70 REQUIRED program_options)
@@ -62,7 +62,7 @@ add_executable(${PROJECT_NAME}
   ${CMAKE_CURRENT_BINARY_DIR}/coarse_elasticity.c
 )
 
-target_link_libraries(${PROJECT_NAME} dolfinx Boost::program_options)
+target_link_libraries(${PROJECT_NAME} PRIVATE dolfinx::dolfinx Boost::program_options)
 
 set(CMAKE_CXX_EXTENSIONS OFF)
 target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_20)

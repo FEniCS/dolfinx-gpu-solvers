@@ -22,6 +22,7 @@
 #include <dolfinx/fem/Constant.h>
 #include <dolfinx/la/Vector.h>
 #include <petscsys.h>
+#include <dolfinx/io/XDMFFile.h>
 
 #include <thrust/copy.h>
 #include <thrust/device_vector.h>
@@ -29,7 +30,6 @@
 #include <thrust/fill.h>
 #include <thrust/transform.h>
 
-#include "body_force.h"
 #include "jacobi.h"
 #include "p_multigrid.h"
 #include "util.h"
@@ -50,9 +50,9 @@ struct SmoothingConfig
 };
 
 constexpr std::array smoothing_config = {
-    SmoothingConfig{5, 3, 3},
-    SmoothingConfig{4, 3, 3},
-    SmoothingConfig{2, 3, 3},
+    SmoothingConfig{5, 10, 10},
+    SmoothingConfig{4, 10, 10},
+    SmoothingConfig{2, 10, 10},
 };
 
 int main(int argc, char* argv[])
@@ -81,9 +81,16 @@ int main(int argc, char* argv[])
     std::cout << "n=" << n << "\n";
     auto part
         = mesh::create_cell_partitioner(dolfinx::mesh::GhostMode::none, 2);
-    auto mesh = std::make_shared<mesh::Mesh<U>>(mesh::create_box<U>(
-        MPI_COMM_WORLD, {{{0.0, 0.0, 0.0}, {1.0, 1.0, 1.0}}}, {n, n, n},
-        mesh::CellType::tetrahedron, part));
+    // auto mesh = std::make_shared<mesh::Mesh<U>>(mesh::create_box<U>(
+    //     MPI_COMM_WORLD, {{{0.0, 0.0, 0.0}, {1.0, 1.0, 1.0}}}, {n, n, n},
+    //     mesh::CellType::tetrahedron, part));
+
+    
+    io::XDMFFile xdmf_file(MPI_COMM_WORLD, "geometry.xdmf", "r");
+    auto mesh = std::make_shared<mesh::Mesh<U>>(xdmf_file.read_mesh(
+      fem::CoordinateElement<U>(mesh::CellType::tetrahedron, 1),
+      mesh::GhostMode::none,
+      "mesh"));
 
 
     auto x = mesh->geometry().x();
