@@ -70,8 +70,8 @@ namespace elasticity
                 copy(*_diag_inv, diag_inv);
             }
 
-            template <typename Operator>
-            int solve(Operator& A, Vector& x, const Vector& b, bool jacobi = true){
+            template <typename Operator, typename Preconditioner>
+            int solve(Operator& A, Vector& x, const Vector& b, Preconditioner& M){
                 if (x.array().size() != b.array().size())
                     throw std::runtime_error("Vectors x and b must be the same size");
 
@@ -81,24 +81,21 @@ namespace elasticity
 
                 const T residual_squared0 = dot(*_r, *_r);
 
-                if (jacobi){
-                    // apply Jacobi preconditioner
-                    pointwise_mult(*_p, *_r, *_diag_inv); // p_0 = D^{-1} * r_0
-                }
-                else{
-                    // set initial search direction
-                    copy(*_p, *_r); // p_0 = r_0
-                }
-
-                // compute initial residual norm i.e. residual squared
-                const T rnorm0 = dot(*_r, *_p); // rnorm = r^T * D^{-1} * r
-                T rnorm = rnorm0; // current residual norm
-
                 // compute the tolerance based on the initial residual norm
                 const T rtol2 = _rtol * _rtol;
 
                 if (residual_squared0 < T(1e-24)) // if the initial guess is already the solution
                     return 0;
+
+                M(*_y, *_r); // z0 = M^{-1} * r0
+
+                copy(*_p, *_y); // p0 = z0
+
+                T rho = dot(*_r, *_y); // rho0 = r0^T * z0
+
+                if (rho <= T(0)){
+                    throw std::runtime_error("Preconditioner is not positive definite");
+                }
                     
                 // main CG iteration loop
                 int k = 0;
@@ -113,7 +110,7 @@ namespace elasticity
                     }
 
                     // compute alpha = (r^T * r) / (p^T * Ap)
-                    const T alpha = rnorm / pAp;
+                    const T alpha = rho / pAp;
 
                     // update solution x = x + alpha * p
                     axpy(x, alpha, *_p, x); // x = alpha * p + x
@@ -121,26 +118,31 @@ namespace elasticity
                     // update residual r = r - alpha * Ap
                     axpy(*_r, T(-alpha), *_y, *_r); // r = -alpha * Ap + r
 
-                    if (jacobi){
-                        // y = D^{-1} * r
-                        pointwise_mult(*_y, *_r, *_diag_inv);
-                    }
-                    else{
-                        // y = r
-                        copy(*_y, *_r);
-                    }
+                    const T residual_squared = dot(*_r, *_r);
 
-                    // compute new residual norm
-                    const T rnorm_new = dot(*_r, *_y); // rnorm_new = r^T * D^{-1} * r
+                    std::cout
+                        << "Outer CG iteration " << k + 1
+                        << ", relative residual = "
+                        << std::sqrt(residual_squared / residual_squared0)
+                        << "\n";
 
                     ++k; // increment iteration counter
 
                     // check for convergence
-                    if (rnorm_new / rnorm0 < rtol2)
+                    if (residual_squared / residual_squared0 < rtol2)
                         break;
 
+                    M(*_y, *_r); // z = M^{-1} * r
+
+                    // compute new residual norm
+                    T rho_new = dot(*_r, *_y); // rho_new = r^T * z
+
+                    if (rho_new <= T(0)){
+                        throw std::runtime_error("Preconditioner is not positive definite");
+                    }
+
                     // compute beta = (r_new^T * r_new) / (r^T * r)
-                    const T beta = rnorm_new / rnorm;
+                    const T beta = rho_new / rho;
 
                     // update search direction 
                     // with jacobi: p = D^{-1} * r + beta * p
@@ -148,7 +150,7 @@ namespace elasticity
                     axpy(*_p, beta, *_p, *_y); // p = beta * p + r
 
                     // update residual norm for next iteration
-                    rnorm = rnorm_new;
+                    rho = rho_new;
                 }
             return k;
             }

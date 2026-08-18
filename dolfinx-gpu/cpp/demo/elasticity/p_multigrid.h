@@ -581,21 +581,7 @@ class PMultigridHierarchy<LastCoarserP>{
       VecNorm(coarse_rhs_petsc, NORM_2, &rhs_norm);
       std::cout << "Coarse level rhs norm: " << rhs_norm << "\n";
 
-
       KSPSolve(coarse_solver, coarse_rhs_petsc, coarse_solution_petsc);
-
-      PetscInt its;
-      KSPConvergedReason reason;
-      PetscReal rnorm;
-
-      KSPGetIterationNumber(coarse_solver, &its);
-      KSPGetConvergedReason(coarse_solver, &reason);
-      KSPGetResidualNorm(coarse_solver, &rnorm);
-
-      std::cout << "KSP iterations: " << its << '\n';
-      std::cout << "KSP reason: " << static_cast<int>(reason) << '\n';
-      std::cout << "KSP reported residual: " << rnorm << '\n';
-
 
       PetscReal correction_norm;
       VecNorm(coarse_solution_petsc, NORM_2, &correction_norm);
@@ -712,8 +698,8 @@ class PMultigridHierarchy<LastCoarserP>{
 
         KSPSetOperators(coarse_solver, coarse_A, coarse_A); // matrix for coarse solve
         KSPSetOptionsPrefix(coarse_solver, "coarse_"); // set prefix for command line options
-        KSPSetType(coarse_solver, KSPCG); // apply GAMG as a preconditioner to CG iteration
-        KSPSetTolerances(coarse_solver, 1e-5, PETSC_DEFAULT, PETSC_DEFAULT, 200); // set tolerances for coarse solve
+        KSPSetType(coarse_solver, KSPPREONLY); // apply GAMG as a preconditioner to CG iteration
+        // KSPSetTolerances(coarse_solver, 1e-5, PETSC_DEFAULT, PETSC_DEFAULT, 10); // set tolerances for coarse solve
         KSPSetInitialGuessNonzero(coarse_solver, PETSC_FALSE);
         KSPSetNormType(coarse_solver, KSP_NORM_UNPRECONDITIONED);
 

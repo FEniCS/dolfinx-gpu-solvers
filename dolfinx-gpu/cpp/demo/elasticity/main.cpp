@@ -36,6 +36,7 @@
 #include "p_multigrid.h"
 #include "util.h"
 #include "load.h"
+#include "cg.h"
 
 using namespace dolfinx;
 namespace po = boost::program_options;
@@ -47,7 +48,7 @@ using Hierarchy = PMultigridHierarchy<1>;
 // struct SmoothingConfig{int order; int pre; int post;};
 
 // constexpr std::array smoothing_config = {
-//     SmoothingConfig{2, 10, 20}, // 3 pre-smoothing and 3 post-smoothing steps for P2
+//     SmoothingConfig{2, 3, 3}, // 3 pre-smoothing and 3 post-smoothing steps for P2
 // };
 
 int main(int argc, char* argv[])
@@ -140,18 +141,39 @@ int main(int argc, char* argv[])
     DeviceVector fine_Ax(fine_level.V->dofmap()->index_map, 3);
     DeviceVector fine_residual(fine_level.V->dofmap()->index_map, 3);
 
+    // outer cg solver
+    elasticity::CGSolver<DeviceVector> cg_solver(fine_level.V->dofmap()->index_map, 3);
+    cg_solver.set_max_iterations(200);
+    cg_solver.set_tolerance(T(1e-8));
+
+    auto pmg_preconditioner = [&hierarchy](DeviceVector& z, const DeviceVector& r)
+    {
+      thrust::fill(thrust::device, z.array().begin(), z.array().end(), T(0));
+      hierarchy.v_cycle(z, r);
+    };
+
+    // DeviceVector diagonal(fine_level.V->dofmap()->index_map, 3);
+    // DeviceVector diagonal_inverse(fine_level.V->dofmap()->index_map, 3);
+
+    // fine_level.assemble_diagonal(diagonal);
+
+    // thrust::transform(thrust::device, diagonal.array().begin(), diagonal.array().end(), fine_level.bc_marker.begin(), diagonal_inverse.array().begin(), invert_jacobi_diagonal<T>());
+
+    // auto jacobi_preconditioner = [&diagonal_inverse](DeviceVector& z, const DeviceVector& r)
+    // {
+    //   thrust::transform(thrust::device, r.array().begin(), r.array().end(), diagonal_inverse.array().begin(), z.array().begin(), thrust::multiplies<T>());
+    // };
+
     // timing 
     constexpr int runs = 1;
-    constexpr int max_v_cycles = 1;
-    constexpr T residual_tolerance = T(1e-8);
 
     std::vector<double> times;
     times.reserve(runs);
 
-    int v_cycles = 0;
     T initial_residual_norm = T(0);
     T final_residual_norm = T(0);
     T relative_residual_norm = T(0);
+    int cg_iterations = 0;
 
     std::cout << std::setprecision(17);
 
@@ -159,31 +181,14 @@ int main(int argc, char* argv[])
     {
       // reset x to 0 for each run
       thrust::fill(thrust::device, x_device.array().begin(), x_device.array().end(), T(0));
+      
       device_synchronize();
 
       initial_residual_norm = residual_norm(fine_level, x_device, b_device, fine_Ax, fine_residual);
 
-      std::ofstream residual_file("relative_residual.csv");
-
-      residual_file << "v_cycle,relative_residual\n";
-
-      final_residual_norm = initial_residual_norm;
-      v_cycles = 0;
-
-      const T target_residual_norm = initial_residual_norm * residual_tolerance;
-
       const auto start_time = std::chrono::high_resolution_clock::now();
 
-      while (final_residual_norm > target_residual_norm && v_cycles < max_v_cycles)
-      {
-        hierarchy.v_cycle(x_device, b_device);
-        final_residual_norm = residual_norm(fine_level, x_device, b_device, fine_Ax, fine_residual);
-        relative_residual_norm = final_residual_norm / initial_residual_norm;
-
-        // residual_file << v_cycles + 1 << "," << std::setprecision(17) << relative_residual_norm << "\n";
-
-        ++v_cycles;
-      }
+      cg_iterations = cg_solver.solve(fine_level, x_device, b_device, pmg_preconditioner);
       
       device_synchronize();
 
@@ -191,10 +196,13 @@ int main(int argc, char* argv[])
       times.push_back(std::chrono::duration<double>(end_time - start_time).count());
     }
 
-    std::cout << "Number of iterations: " << v_cycles << "\n";
+    final_residual_norm = residual_norm(fine_level, x_device, b_device, fine_Ax, fine_residual);
+    relative_residual_norm = final_residual_norm / initial_residual_norm;
+
+    std::cout << "Number of iterations: " << cg_iterations << "\n";
 
     const double average_time = std::accumulate(times.begin(), times.end(), 0.0) / times.size();
-    std::cout << "Average multigrid solve time: " << average_time << " seconds\n";
+    std::cout << "Average cg + multigrid solve time: " << average_time << " seconds\n";
 
     std::cout << "Initial residual norm: " << initial_residual_norm << "\n";
     std::cout << "Final residual norm: " << final_residual_norm << "\n";
@@ -220,8 +228,7 @@ int main(int argc, char* argv[])
 
     thrust::copy(b_device.array().begin(), b_device.array().end(), b->x()->array().begin());
 
-    std::cout << "b norm = "
-              << dolfinx::la::norm(*b->x()) << "\n";
+    std::cout << "b norm = " << dolfinx::la::norm(*b->x()) << "\n";
 
     ///// for visualisation in PARAVIEW /////
     #ifdef HAS_ADIOS2
