@@ -25,6 +25,11 @@ coord_element = blocked_element(wrap_element(coord_scalar), (3,))
 
 domain = ufl.Mesh(coord_element)
 
+E = 1.0e9
+nu = 0.3
+
+mu = E / (2.0 * (1.0 + nu))
+lam = E * nu / ((1.0 + nu) * (1.0 - 2.0 * nu))
 
 # create a linear elasticity form for a given polynomial degree p
 def elasticity_form(p):
@@ -48,7 +53,7 @@ def elasticity_form(p):
     eps_u = ufl.sym(ufl.grad(u))
 
     # lambda = mu = 1 matching GPU operator
-    sigma_u = (2.0 * eps_u + ufl.tr(eps_u) * ufl.Identity(3))
+    sigma_u = (2.0 * mu * eps_u + lam * ufl.tr(eps_u) * ufl.Identity(3))
 
     # this is what gets assembled into the sparse matrix
     return ufl.inner(sigma_u, ufl.grad(v)) * ufl.dx

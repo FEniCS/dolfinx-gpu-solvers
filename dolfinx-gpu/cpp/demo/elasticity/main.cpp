@@ -16,6 +16,7 @@
 #include <numeric>
 #include <vector>
 #include <fstream>
+#include <limits>
 
 #include <boost/program_options.hpp>
 #include <dolfinx.h>
@@ -23,6 +24,7 @@
 #include <dolfinx/la/Vector.h>
 #include <petscsys.h>
 #include <dolfinx/io/XDMFFile.h>
+#include <dolfinx/io/ADIOS2Writers.h>
 
 #include <thrust/copy.h>
 #include <thrust/device_vector.h>
@@ -39,21 +41,14 @@ using namespace dolfinx;
 namespace po = boost::program_options;
 
 // polynomial orders from highest to lowest for p-multigrid
-using Hierarchy = PMultigridHierarchy<5, 4, 2, 1>;
+using Hierarchy = PMultigridHierarchy<1>;
 
-// p-multigrid smoothing configuration
-struct SmoothingConfig
-{
-    int order;
-    int pre;
-    int post;
-};
+// // p-multigrid smoothing configuration
+// struct SmoothingConfig{int order; int pre; int post;};
 
-constexpr std::array smoothing_config = {
-    SmoothingConfig{5, 10, 10},
-    SmoothingConfig{4, 10, 10},
-    SmoothingConfig{2, 10, 10},
-};
+// constexpr std::array smoothing_config = {
+//     SmoothingConfig{2, 10, 20}, // 3 pre-smoothing and 3 post-smoothing steps for P2
+// };
 
 int main(int argc, char* argv[])
 {
@@ -79,33 +74,17 @@ int main(int argc, char* argv[])
   {
     std::int32_t n = vm["n"].as<std::size_t>();
     std::cout << "n=" << n << "\n";
-    auto part
-        = mesh::create_cell_partitioner(dolfinx::mesh::GhostMode::none, 2);
+    // auto part
+    //     = mesh::create_cell_partitioner(dolfinx::mesh::GhostMode::none, 2);
     // auto mesh = std::make_shared<mesh::Mesh<U>>(mesh::create_box<U>(
     //     MPI_COMM_WORLD, {{{0.0, 0.0, 0.0}, {1.0, 1.0, 1.0}}}, {n, n, n},
     //     mesh::CellType::tetrahedron, part));
-
     
-    io::XDMFFile xdmf_file(MPI_COMM_WORLD, "geometry.xdmf", "r");
+    io::XDMFFile xdmf_file(MPI_COMM_WORLD, "/home/af854/dolfinx-gpu-solvers/dolfinx-gpu/Crescendo_NX20mm.xdmf", "r");
     auto mesh = std::make_shared<mesh::Mesh<U>>(xdmf_file.read_mesh(
       fem::CoordinateElement<U>(mesh::CellType::tetrahedron, 1),
       mesh::GhostMode::none,
       "mesh"));
-
-
-    auto x = mesh->geometry().x();
-    constexpr U amplitude = U(0.15);
-    constexpr U pi = U(3.14159265358979323846);
-
-    for (std::size_t i = 0; i < x.size()/3; ++i)
-    {
-      const U X = x[3 * i + 0];
-      const U Y = x[3 * i + 1];
-      const U Z = x[3 * i + 2];
-
-      x[3 * i + 0] = X + amplitude * std::sin(pi * X) * std::sin(pi * Y) * std::sin(pi * Z);
-    }
-
 
     // Create list of all cells
     std::vector<std::int32_t> cell_list_host(
@@ -114,38 +93,45 @@ int main(int argc, char* argv[])
     thrust::device_vector<std::int32_t> cell_list(cell_list_host.begin(),
                                                    cell_list_host.end());
 
-    auto boundary = [](auto x){ // x is a table of coordinates
+    const int tdim = mesh->topology()->dim();
+    const int fdim = tdim - 1;                                         
+
+    auto boundary_facets = mesh::locate_entities_boundary(
+      *mesh,
+      fdim,
+      [](auto x){ // x is a table of coordinates
       std::vector<std::int8_t> marker(x.extent(1), false); // create a list called marker which has one entry for each point being checked
+            
+      constexpr T xmin = T(2588.61044);
+      constexpr T tol = T(1e-2);
+
       // mark points on the left boundary (x=0) as true
       for (std::size_t p = 0; p < x.extent(1); ++p) // loop over all points
       {
-        // if (std::abs(x(0, p)) < 1e-8) // check if x coordiante is 0/close to 0
-        // {
-        //   marker[p] = true; // mark this point as true
-        // }
-
-        marker[p] = std::abs(x(0, p)) < 1e-8
-          || std::abs(x(1, p)) < 1e-8
-          || std::abs(x(2, p)) < 1e-8
-          || std::abs(x(0, p) - 1.0) < 1e-8
-          || std::abs(x(1, p) - 1.0) < 1e-8
-          || std::abs(x(2, p) - 1.0) < 1e-8;
+        marker[p] = std::abs(x(0, p) - xmin) < tol; // mark points on the left boundary (x=xmin) as true
       }
       return marker;
-    };
+    });
 
-    Hierarchy hierarchy(mesh, cell_list, boundary);
+    std::cout << "Number of boundary facets: "<< boundary_facets.size() << '\n';
 
-    for (const auto& config : smoothing_config)
-    {
-        hierarchy.set_smoothing_steps(config.order, config.pre, config.post);
-    }
+    constexpr T E = T(1.0e9);
+    constexpr T nu = T(0.3);
+    constexpr T mu = E / (T(2) * (T(1) + nu));
+    constexpr T lambda = E * nu / ((T(1) + nu) * (T(1) - T(2) * nu));
+
+    Hierarchy hierarchy(mesh, cell_list, boundary_facets, lambda, mu);
+
+    // for (const auto& config : smoothing_config)
+    // {
+    //     hierarchy.set_smoothing_steps(config.order, config.pre, config.post);
+    // }
 
     auto& fine_level = hierarchy.level;
 
     using DeviceVector = typename Hierarchy::DeviceVector;
     DeviceVector b_device(fine_level.V->dofmap()->index_map, 3);
-    fine_level.assemble_body_force(b_device, detail::ManufacturedBodyForce<T>{T(1), T(1)}); // assemble body force vector with force in negative z direction
+    fine_level.assemble_body_force(b_device, detail::ConstantBodyForce<T>{T(0), T(0), T(-1)}); // assemble body force vector with force in negative z direction
 
     // 0 initial guess
     DeviceVector x_device(fine_level.V->dofmap()->index_map, 3);
@@ -155,8 +141,8 @@ int main(int argc, char* argv[])
     DeviceVector fine_residual(fine_level.V->dofmap()->index_map, 3);
 
     // timing 
-    constexpr int runs = 5;
-    constexpr int max_v_cycles = 1000;
+    constexpr int runs = 1;
+    constexpr int max_v_cycles = 1;
     constexpr T residual_tolerance = T(1e-8);
 
     std::vector<double> times;
@@ -241,7 +227,7 @@ int main(int argc, char* argv[])
     #ifdef HAS_ADIOS2
       x2->name = "displacement";
       io::VTXWriter<U> writer(
-          MPI_COMM_WORLD, "cantilever.bp", {x2}, "bp4");
+          MPI_COMM_WORLD, "engine.bp", {x2}, "bp4");
       writer.write(0.0);
     #endif
 

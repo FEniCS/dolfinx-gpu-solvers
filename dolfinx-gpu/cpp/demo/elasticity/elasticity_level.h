@@ -89,6 +89,8 @@ class ElasticityLevel{
   private:
     // all polynomial meshes use the same mesh cells
     const DeviceIndexVector& _cell_list;
+    const T lambda_;
+    const T mu_;
   
   public:
     basix::FiniteElement<U> elem;
@@ -109,8 +111,12 @@ class ElasticityLevel{
     ElasticityLevel(
       const std::shared_ptr<dolfinx::mesh::Mesh<U>>& mesh_ptr,
       const DeviceIndexVector& cell_list,
-      const BoundaryLocator& boundary_locator)
+      const BoundaryLocator& boundary_locator,
+      const T lambda_,
+      const T mu_)
       : _cell_list(cell_list),
+        lambda_(lambda_),
+        mu_(mu_),
         elem(basix::create_element<U>(
           basix::element::family::P, basix::cell::type::tetrahedron, P,
           basix::element::lagrange_variant::equispaced,
@@ -132,15 +138,14 @@ class ElasticityLevel{
     void operator()(DeviceVector& output, const DeviceVector& input) const
     {
       thrust::fill(thrust::device, output.array().begin(), output.array().end(), T(0));
-      assemble_elasticity_action<P>(output, input, phi_data, K, wdetJ,
-                                    gpu_dofmap.map(), _cell_list, bc_marker);
+      assemble_elasticity_action<P>(output, input, phi_data, K, wdetJ, gpu_dofmap.map(), _cell_list, bc_marker, lambda_, mu_);
     }
 
     // assemble the diagonal of the elasticity operator for this level
     void assemble_diagonal(DeviceVector& diagonal) const
     {
       thrust::fill(thrust::device, diagonal.array().begin(), diagonal.array().end(), T(0));
-      assemble_elasticity_diagonal<P>(diagonal, phi_data, K, wdetJ, gpu_dofmap.map(), _cell_list, bc_marker);
+      assemble_elasticity_diagonal<P>(diagonal, phi_data, K, wdetJ, gpu_dofmap.map(), _cell_list, bc_marker, lambda_, mu_);
     }
 
     // assemble the body force vector for this level
@@ -180,10 +185,23 @@ class ElasticityLevel{
       phi_data = DeviceScalarVector(table.begin(), table.end());
     }
 
-    template <typename BoundaryLocator>
-    void build_bc_marker(const BoundaryLocator& boundary_locator){
+    template <typename FacetContainer>
+    void build_bc_marker(const FacetContainer& boundary_facets){
+      const int tdim = V->mesh()->topology()->dim();
+      const int fdim = tdim - 1;
+
+      V->mesh()->topology_mutable()->create_entities(fdim);
+      V->mesh()->topology_mutable()->create_connectivity(fdim, tdim);
+      V->mesh()->topology_mutable()->create_connectivity(tdim, fdim);
+
       // find the clamped nodes
-      bc_nodes = dolfinx::fem::locate_dofs_geometrical(*V, boundary_locator);
+      bc_nodes = dolfinx::fem::locate_dofs_topological(
+        *V->mesh()->topology(), 
+        *V->dofmap(), 
+        fdim, 
+        std::span<const std::int32_t>(boundary_facets.data(), boundary_facets.size()));
+
+      std::cout << "Number of Dirichlet boundary nodes: " << bc_nodes.size() << std::endl;
 
       // create a temporary function to obtain the scalar vector size
       auto size_function = std::make_shared<dolfinx::fem::Function<T>>(V);
@@ -195,7 +213,7 @@ class ElasticityLevel{
         bc_marker_host[3 * node + 2] = true;
       }
 
-      bc_marker = DeviceMarkerVector(bc_marker_host.begin(), bc_marker_host.end());
+      bc_marker.assign(bc_marker_host.begin(), bc_marker_host.end());
     }
 
     void build_dof_coordinates(){

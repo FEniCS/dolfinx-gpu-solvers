@@ -359,8 +359,8 @@ void assemble_elasticity_action(dolfinx::la::Vector<T, ContainerT>& b,
                                 const ContainerI& cell_dofs,
                                 const ContainerI& cells,
                                 const ContainerB& bc_marker,
-                                const T lambda = T(1), 
-                                const T mu = T(1))
+                                const T lambda, 
+                                const T mu)
 {
   constexpr int ndofs = detail::elasticity_traits<P>::ndofs;
   constexpr int nq = detail::elasticity_traits<P>::nq;
@@ -391,8 +391,8 @@ void assemble_elasticity_diagonal(dolfinx::la::Vector<T, ContainerT>& diagonal,
                                   const ContainerI& cell_dofs,
                                   const ContainerI& cells,
                                   const ContainerB& bc_marker,
-                                  const T lambda = T(1), 
-                                  const T mu = T(1))
+                                  const T lambda, 
+                                  const T mu)
 {
   constexpr int ndofs = detail::elasticity_traits<P>::ndofs;
   constexpr int nq = detail::elasticity_traits<P>::nq;

@@ -9,6 +9,8 @@ cmake_minimum_required(VERSION 3.21)
 set(PROJECT_NAME demo_elasticity)
 project(${PROJECT_NAME} LANGUAGES C CXX)
 
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 if(NOT TARGET dolfinx::dolfinx)
   find_package(DOLFINX REQUIRED)
 endif()

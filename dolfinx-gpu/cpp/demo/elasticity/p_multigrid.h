@@ -11,7 +11,13 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <algorithm>
+#include <functional>
+#include <iterator>
+#include <span>
+#include <cmath>
 
+#include <dolfinx/la/utils.h>
 #include <basix/interpolation.h>
 #include <dolfinx/fem/petsc.h>
 #include <dolfinx/la/petsc.h>
@@ -23,6 +29,7 @@
 #include <thrust/execution_policy.h>
 #include <thrust/fill.h>
 #include <thrust/device_vector.h>
+#include <thrust/inner_product.h>
 
 #if defined(__HIP_PLATFORM_AMD__)
     #include <hip/hip_runtime.h>
@@ -126,6 +133,104 @@ namespace p_transfer
 } // namespace p_transfer
 
 
+namespace p_multigrid_detail
+{
+  MatNullSpace build_near_nullspace(const dolfinx::fem::FunctionSpace<double>& V)
+  {
+    // Index map for displacement nodes
+    auto map = V.dofmap()->index_map;
+    const int bs = V.dofmap()->index_map_bs();
+
+    // six rigid-body modes:
+    // 3 translations + 3 rotations
+    std::vector<dolfinx::la::Vector<T>> basis(6, dolfinx::la::Vector<T>(map, bs));
+    
+    for (auto& v : basis)
+      std::ranges::fill(v.array(), T(0));
+
+    const std::size_t num_nodes = map->size_local() + map->num_ghosts();
+
+    // translation modes:
+    // mode 0: translation in x-direction (1, 0, 0)
+    // mode 1: translation in y-direction (0, 1, 0)
+    // mode 2: translation in z-direction (0, 0, 1)
+    for (int k = 0; k < 3; ++k)
+    {
+      auto& values = basis[k].array();
+
+      for (std::int32_t i = 0; i < num_nodes; ++i)
+        values[bs * i + k] = T(1);
+    }
+
+    // rotation modes:
+    auto& x3 = basis[3].array(); // rotation about x-axis
+    auto& x4 = basis[4].array(); // rotation about y-axis
+    auto& x5 = basis[5].array(); // rotation about z-axis
+
+    const std::vector<double> x = V.tabulate_dof_coordinates(false);
+    const std::int32_t* dofs = V.dofmap()->map().data_handle();
+
+    std::cout << "Dof coordinate entries = " << x.size() << "\n";
+    std::cout << "Dofmap entries = " << V.dofmap()->map().size() << "\n";
+    std::cout << "Basis vector entries = " << basis[0].array().size() << "\n";
+
+    const std::size_t num_coordinate_blocks = x.size() / 3;
+    const std::size_t num_basis_blocks = basis[0].array().size() / bs;
+
+    for (size_t i = 0; i < V.dofmap()->map().size(); ++i)
+    {
+      const std::int32_t dof = dofs[i];
+
+      if (dof < 0 || dof >= static_cast<std::int32_t>(num_coordinate_blocks)
+                  || dof >= static_cast<std::int32_t>(num_basis_blocks))
+        throw std::runtime_error("Dof index out of bounds");
+
+      std::span<const double, 3> xd(x.data() + 3 * dof, 3);
+
+      // rotation about z-axis: (-y, x, 0)
+      x3[bs * dof + 0] = -xd[1];
+      x3[bs * dof + 1] = xd[0];
+
+      // rotation about y-axis: (z, 0, -x)
+      x4[bs * dof + 0] = xd[2];
+      x4[bs * dof + 2] = -xd[0];
+
+      // rotation about x-axis: (0, -z, y)
+      x5[bs * dof + 1] = -xd[2];
+      x5[bs * dof + 2] = xd[1];
+    }
+
+    // orthonormalise the six modes
+    dolfinx::la::orthonormalize(std::vector<std::reference_wrapper<dolfinx::la::Vector<T>>>(basis.begin(), basis.end()));
+
+    if (!dolfinx::la::is_orthonormal(std::vector<std::reference_wrapper<const dolfinx::la::Vector<T>>>(basis.begin(), basis.end())))
+      throw std::runtime_error("Space not orthonormal");
+
+    // build PETSc nullspace object
+    const std::int32_t length = bs * map->size_local();
+
+    std::vector<std::span<const T>> basis_local;
+    basis_local.reserve(6);
+
+    std::transform(basis.cbegin(), basis.cend(), std::back_inserter(basis_local),
+                   [length](const auto& v) {
+                     return std::span<const T>(v.array().data(), length);
+                   });
+    
+    MPI_Comm comm = V.mesh()->comm();
+    
+    std::vector<Vec> petsc_basis = dolfinx::la::petsc::create_vectors(comm, basis_local);
+    MatNullSpace ns = dolfinx::la::petsc::create_nullspace(comm, petsc_basis);
+
+    for (auto v : petsc_basis)
+      VecDestroy(&v);
+
+    return ns;
+  }
+
+} // namespace p_multigrid_detail
+
+
 template <int P>
 const ufcx_form* get_coarse_ufcx_form()
 {
@@ -184,9 +289,11 @@ class PMultigridHierarchy<FineP, NextCoarserP, RemainingOrders...>{
     PMultigridHierarchy(
       const MeshPtr& mesh_ptr,
       const CellList& cell_list,
-      const BoundaryLocator& boundary_locator)
-      : level(mesh_ptr, cell_list, boundary_locator),
-        coarser(mesh_ptr, cell_list, boundary_locator),
+      const BoundaryLocator& boundary_locator,
+      const T lambda,
+      const T mu)
+      : level(mesh_ptr, cell_list, boundary_locator, lambda, mu),
+        coarser(mesh_ptr, cell_list, boundary_locator, lambda, mu),
         diagonal_inverse(level.V->dofmap()->index_map, 3),
         fine_Ax(level.V->dofmap()->index_map, 3),
         fine_residual(level.V->dofmap()->index_map, 3),
@@ -280,7 +387,7 @@ class PMultigridHierarchy<FineP, NextCoarserP, RemainingOrders...>{
     template <typename Vector>
     void v_cycle(Vector& solution, const Vector& rhs)
     {
-      constexpr T omega = T(0.3); // damping factor
+      constexpr T omega = T(0.25); // damping factor
 
       // pre-smoothing on level FineP
       jacobi_smooth(level, solution, rhs, diagonal_inverse, fine_Ax, fine_residual, pre_smooth_steps, omega);
@@ -303,6 +410,42 @@ class PMultigridHierarchy<FineP, NextCoarserP, RemainingOrders...>{
       // prolongate correction_coarse from level CoarseP to level FineP
       thrust::fill(thrust::device, fine_correction.array().begin(), fine_correction.array().end(), T(0));
       prolong(coarse_correction, fine_correction);
+
+
+      // testing prolongation
+      level(fine_Ax, fine_correction);
+      thrust::transform(
+        thrust::device,
+        fine_residual.array().begin(),
+        fine_residual.array().end(),
+        fine_Ax.array().begin(),
+        fine_residual.array().begin(),
+        thrust::minus<T>()
+      );
+
+      restrict(fine_residual, coarse_rhs);
+
+      device_synchronize();
+
+      // ||r2_after||
+      T fine_norm_sq = thrust::inner_product(
+          thrust::device,
+          fine_residual.array().begin(),
+          fine_residual.array().end(),
+          fine_residual.array().begin(),
+          T(0));
+
+      // ||R r2_after||
+      T restricted_norm_sq = thrust::inner_product(
+          thrust::device,
+          coarse_rhs.array().begin(),
+          coarse_rhs.array().end(),
+          coarse_rhs.array().begin(),
+          T(0));
+
+      std::cout << "Fine residual after P1 correction = " << std::sqrt(fine_norm_sq) << '\n';
+
+      std::cout << "Restricted residual after P1 correction = " << std::sqrt(restricted_norm_sq) << '\n';
 
       // add correction to solution_FineP
       thrust::transform(thrust::device, solution.array().begin(), solution.array().end(), fine_correction.array().begin(), solution.array().begin(), thrust::plus<T>());
@@ -384,15 +527,19 @@ class PMultigridHierarchy<LastCoarserP>{
     PMultigridHierarchy(
       const MeshPtr& mesh_ptr,
       const CellList& cell_list,
-      const BoundaryLocator& boundary_locator)
-      : level(mesh_ptr, cell_list, boundary_locator),
+      const BoundaryLocator& boundary_locator,
+      const T lambda,
+      const T mu)
+      : level(mesh_ptr, cell_list, boundary_locator, lambda, mu),
         coarse_bc(std::array<T, 3>{T(0), T(0), T(0)}, level.bc_nodes, level.V),
         coarse_form(dolfinx::fem::create_form<T>(*get_coarse_ufcx_form<LastCoarserP>(), {level.V, level.V}, {}, {}, {}, {}, level.V->mesh())),
         coarse_coordinates(level.V->tabulate_dof_coordinates(false))
     {
       assemble_coarse_matrix();
+      attach_near_nullspace();
       setup_gamg();
       create_petsc_vectors();
+
     }
 
     ~PMultigridHierarchy()
@@ -428,7 +575,43 @@ class PMultigridHierarchy<LastCoarserP>{
         VecCUDAPlaceArray(coarse_rhs_petsc, rhs.array().data().get());
         VecCUDAPlaceArray(coarse_solution_petsc, solution.array().data().get());
       #endif
-        KSPSolve(coarse_solver, coarse_rhs_petsc, coarse_solution_petsc);
+
+
+      PetscReal rhs_norm;
+      VecNorm(coarse_rhs_petsc, NORM_2, &rhs_norm);
+      std::cout << "Coarse level rhs norm: " << rhs_norm << "\n";
+
+
+      KSPSolve(coarse_solver, coarse_rhs_petsc, coarse_solution_petsc);
+
+      PetscInt its;
+      KSPConvergedReason reason;
+      PetscReal rnorm;
+
+      KSPGetIterationNumber(coarse_solver, &its);
+      KSPGetConvergedReason(coarse_solver, &reason);
+      KSPGetResidualNorm(coarse_solver, &rnorm);
+
+      std::cout << "KSP iterations: " << its << '\n';
+      std::cout << "KSP reason: " << static_cast<int>(reason) << '\n';
+      std::cout << "KSP reported residual: " << rnorm << '\n';
+
+
+      PetscReal correction_norm;
+      VecNorm(coarse_solution_petsc, NORM_2, &correction_norm);
+      std::cout << "Coarse level correction norm: " << correction_norm << "\n";
+
+      Vec coarse_residual;
+      VecDuplicate(coarse_rhs_petsc, &coarse_residual);
+      MatMult(coarse_A, coarse_solution_petsc, coarse_residual);
+      VecAXPY(coarse_residual, -1.0, coarse_rhs_petsc);
+      PetscReal coarse_residual_norm;
+      VecNorm(coarse_residual, NORM_2, &coarse_residual_norm);
+      std::cout << "P1 true residual norm: " << coarse_residual_norm << "\n";
+      std::cout << "P1 relative residual norm: " << coarse_residual_norm / rhs_norm << "\n";
+      VecDestroy(&coarse_residual);
+
+
       #if defined(__HIP_PLATFORM_AMD__)
         VecHIPResetArray(coarse_rhs_petsc);
         VecHIPResetArray(coarse_solution_petsc);
@@ -496,9 +679,9 @@ class PMultigridHierarchy<LastCoarserP>{
       pattern.finalize();
 
       #if defined(__HIP_PLATFORM_AMD__)
-          coarse_A = dolfinx::la::petsc::create_matrix(level.V->mesh()->comm(), pattern, "aijhipsparse");
+          coarse_A = dolfinx::la::petsc::create_matrix(level.V->mesh()->comm(), pattern, "aij");
       #else
-          coarse_A = dolfinx::la::petsc::create_matrix(level.V->mesh()->comm(), pattern, "aijcusparse");
+          coarse_A = dolfinx::la::petsc::create_matrix(level.V->mesh()->comm(), pattern, "aij");
       #endif
 
       MatZeroEntries(coarse_A);
@@ -524,27 +707,29 @@ class PMultigridHierarchy<LastCoarserP>{
       void setup_gamg()
       {
         // set up the GAMG solver
-
         MPI_Comm comm = level.V->mesh()->comm();
         KSPCreate(comm, &coarse_solver);
 
         KSPSetOperators(coarse_solver, coarse_A, coarse_A); // matrix for coarse solve
         KSPSetOptionsPrefix(coarse_solver, "coarse_"); // set prefix for command line options
-
         KSPSetType(coarse_solver, KSPCG); // apply GAMG as a preconditioner to CG iteration
+        KSPSetTolerances(coarse_solver, 1e-5, PETSC_DEFAULT, PETSC_DEFAULT, 200); // set tolerances for coarse solve
+        KSPSetInitialGuessNonzero(coarse_solver, PETSC_FALSE);
         KSPSetNormType(coarse_solver, KSP_NORM_UNPRECONDITIONED);
-        KSPSetTolerances(coarse_solver, 1e-8, PETSC_DEFAULT, PETSC_DEFAULT, 10); // set tolerances for coarse solve
-        
+
         PC pc;
         KSPGetPC(coarse_solver, &pc);
         PCSetType(pc, PCGAMG);
-
+        PCGAMGSetCoarseEqLim(pc, 1000);
         KSPSetFromOptions(coarse_solver); // apply any command line options
-        KSPGetPC(coarse_solver, &pc);
-
-        const PetscInt num_owned_nodes = static_cast<PetscInt>(level.V->dofmap()->index_map->size_local());
-        PCSetCoordinates(pc, 3, num_owned_nodes, coarse_coordinates.data()); // give GAMG xyz coordinates of displacement nodes
-
         KSPSetUp(coarse_solver); // actually construct the AMG hierarchy 
+      }
+
+
+      void attach_near_nullspace()
+      {
+        MatNullSpace ns = p_multigrid_detail::build_near_nullspace(*level.V);
+        MatSetNearNullSpace(coarse_A, ns);
+        MatNullSpaceDestroy(&ns);
       }
   };
