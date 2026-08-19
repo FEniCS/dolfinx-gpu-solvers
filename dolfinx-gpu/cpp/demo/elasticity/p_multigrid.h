@@ -39,6 +39,15 @@
 #endif
 
 
+enum class SmootherType
+{
+  Jacobi,
+  Chebyshev
+};
+
+constexpr SmootherType smoother_type = SmootherType::Jacobi;
+
+
 namespace p_transfer
 {
     // compute prolongation of cells from coarse to fine mesh
@@ -278,6 +287,11 @@ class PMultigridHierarchy<FineP, NextCoarserP, RemainingOrders...>{
     DeviceVector fine_residual;
     DeviceVector diagonal_inverse;
 
+    // Chebyshev
+    T lambda_max = T(0);
+    DeviceVector chebyshev_previous;
+    DeviceVector chebyshev_next;
+
     // vectors used on NextCoarserP
     DeviceVector coarse_rhs;
     DeviceVector coarse_correction;
@@ -297,6 +311,8 @@ class PMultigridHierarchy<FineP, NextCoarserP, RemainingOrders...>{
         diagonal_inverse(level.V->dofmap()->index_map, 3),
         fine_Ax(level.V->dofmap()->index_map, 3),
         fine_residual(level.V->dofmap()->index_map, 3),
+        chebyshev_previous(level.V->dofmap()->index_map, 3),
+        chebyshev_next(level.V->dofmap()->index_map, 3),
         coarse_rhs(coarser.level.V->dofmap()->index_map, 3),
         coarse_correction(coarser.level.V->dofmap()->index_map, 3),
         fine_correction(level.V->dofmap()->index_map, 3)
@@ -318,6 +334,12 @@ class PMultigridHierarchy<FineP, NextCoarserP, RemainingOrders...>{
           diagonal_inverse.array().begin(),
           invert_jacobi_diagonal<T>()
         );
+
+        if constexpr (smoother_type == SmootherType::Chebyshev)
+        {
+            lambda_max = estimate_lambda_max(level, diagonal_inverse, level.bc_marker, chebyshev_previous, chebyshev_next, fine_Ax, fine_residual, 10);
+            std::cout << "Estimated lambda_max = " << lambda_max << "\n";
+        }
     }
 
 
@@ -387,10 +409,8 @@ class PMultigridHierarchy<FineP, NextCoarserP, RemainingOrders...>{
     template <typename Vector>
     void v_cycle(Vector& solution, const Vector& rhs)
     {
-      constexpr T omega = T(0.25); // damping factor
-
       // pre-smoothing on level FineP
-      jacobi_smooth(level, solution, rhs, diagonal_inverse, fine_Ax, fine_residual, pre_smooth_steps, omega);
+      smooth(solution, rhs, pre_smooth_steps);
 
       // compute residual_FineP = rhs_FineP - A_FineP * solution_FineP
       level(fine_Ax, solution);
@@ -451,7 +471,7 @@ class PMultigridHierarchy<FineP, NextCoarserP, RemainingOrders...>{
       thrust::transform(thrust::device, solution.array().begin(), solution.array().end(), fine_correction.array().begin(), solution.array().begin(), thrust::plus<T>());
 
       // post-smoothing on level FineP
-      jacobi_smooth(level, solution, rhs, diagonal_inverse, fine_Ax, fine_residual, post_smooth_steps, omega);
+      smooth(solution, rhs, post_smooth_steps);
     }
 
     private:
@@ -497,6 +517,25 @@ class PMultigridHierarchy<FineP, NextCoarserP, RemainingOrders...>{
         // copy to device
         owner_cell.assign(owner_cell_host.begin(), owner_cell_host.end());
         owner_local.assign(owner_local_host.begin(), owner_local_host.end());
+      }
+
+      void smooth(
+        DeviceVector& solution,
+        const DeviceVector& rhs,
+        int num_steps
+      )
+      {
+        if constexpr (smoother_type == SmootherType::Jacobi)
+        {
+          constexpr T omega = T(0.25); // damping factor
+          jacobi_smooth(level, solution, rhs, diagonal_inverse, fine_Ax, fine_residual, num_steps, omega);
+        }
+        else if constexpr (smoother_type == SmootherType::Chebyshev)
+        {
+          const T cheby_min = T(0.1) * lambda_max; // minimum eigenvalue for Chebyshev smoother
+          const T cheby_max = T(1.1) * lambda_max; // maximum eigenvalue for Chebyshev smoother
+          chebyshev_smooth(level, solution, rhs, diagonal_inverse, fine_Ax, fine_residual, chebyshev_previous, chebyshev_next, num_steps, cheby_min, cheby_max);
+        }
       }
 };
 

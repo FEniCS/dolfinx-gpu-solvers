@@ -42,14 +42,14 @@ using namespace dolfinx;
 namespace po = boost::program_options;
 
 // polynomial orders from highest to lowest for p-multigrid
-using Hierarchy = PMultigridHierarchy<1>;
+using Hierarchy = PMultigridHierarchy<2, 1>;
 
-// // p-multigrid smoothing configuration
-// struct SmoothingConfig{int order; int pre; int post;};
+// p-multigrid smoothing configuration
+struct SmoothingConfig{int order; int pre; int post;};
 
-// constexpr std::array smoothing_config = {
-//     SmoothingConfig{2, 3, 3}, // 3 pre-smoothing and 3 post-smoothing steps for P2
-// };
+constexpr std::array smoothing_config = {
+    SmoothingConfig{2, 3, 3}, // 3 pre-smoothing and 3 post-smoothing steps for P2
+};
 
 int main(int argc, char* argv[])
 {
@@ -73,8 +73,8 @@ int main(int argc, char* argv[])
             vm);
 
   {
-    std::int32_t n = vm["n"].as<std::size_t>();
-    std::cout << "n=" << n << "\n";
+    // std::int32_t n = vm["n"].as<std::size_t>();
+    // std::cout << "n=" << n << "\n";
     // auto part
     //     = mesh::create_cell_partitioner(dolfinx::mesh::GhostMode::none, 2);
     // auto mesh = std::make_shared<mesh::Mesh<U>>(mesh::create_box<U>(
@@ -123,12 +123,19 @@ int main(int argc, char* argv[])
 
     Hierarchy hierarchy(mesh, cell_list, boundary_facets, lambda, mu);
 
-    // for (const auto& config : smoothing_config)
-    // {
-    //     hierarchy.set_smoothing_steps(config.order, config.pre, config.post);
-    // }
+    for (const auto& config : smoothing_config)
+    {
+        hierarchy.set_smoothing_steps(config.order, config.pre, config.post);
+    }
 
     auto& fine_level = hierarchy.level;
+
+    const auto index_map = fine_level.V->dofmap()->index_map;
+    const int bs = fine_level.V->dofmap()->index_map_bs();
+
+    std::cout << "Number of P1 nodes = " << index_map->size_global() << "\n";
+
+    std::cout << "Number of P1 DOFs = " << bs * index_map->size_global() << "\n";
 
     using DeviceVector = typename Hierarchy::DeviceVector;
     DeviceVector b_device(fine_level.V->dofmap()->index_map, 3);
@@ -143,7 +150,7 @@ int main(int argc, char* argv[])
 
     // outer cg solver
     elasticity::CGSolver<DeviceVector> cg_solver(fine_level.V->dofmap()->index_map, 3);
-    cg_solver.set_max_iterations(200);
+    cg_solver.set_max_iterations(1000);
     cg_solver.set_tolerance(T(1e-8));
 
     auto pmg_preconditioner = [&hierarchy](DeviceVector& z, const DeviceVector& r)
