@@ -19,11 +19,11 @@ dtype = np.float64 # float32 or float64
 
 ### Python comparison for GPU linear elasticity demo
 
-polynomial_order = 5 # 2 or 3 for P2 or P3 tetrahedra
-quadrature_degree = 12
+polynomial_order = 2 # 2 or 3 for P2 or P3 tetrahedra
+quadrature_degree = 2
 jacobi = True # use Jacobi preconditioner in CG
 
-n = 1
+n = 4
 msh = create_box(
     MPI.COMM_WORLD,
     [np.array([0.0, 0.0, 0.0], dtype=dtype), 
@@ -61,13 +61,7 @@ V = fem.functionspace(msh, el)
 u_x = u_y = u_z = 0.0
 
 def boundary(x): # where x is an array of coordinates 
-    return (np.isclose(x[0], 0.0)
-        | np.isclose(x[0], 1.0)
-        | np.isclose(x[1], 0.0)
-        | np.isclose(x[1], 1.0)
-        | np.isclose(x[2], 0.0)
-        | np.isclose(x[2], 1.0)
-    )
+    return (np.isclose(x[0], 0.0))
 
 facets = locate_entities_boundary(msh, tdim - 1, boundary) # finds mesh boundary entities where boundary is true
 # in this case, 2D faces of the 3D cells whose coordinates satisfy x=0
@@ -82,8 +76,11 @@ dmap = V.dofmap
 du = ufl.TrialFunction(V)
 v = ufl.TestFunction(V)
 
-mu = dtype(1)
-lmbda = dtype(1)
+E = dtype(1.0e9)
+nu = dtype(0.3)
+
+mu = E / (dtype(2.0) * (dtype(1.0) + nu))
+lmbda = E * nu / ((dtype(1.0) + nu) * (dtype(1.0) - dtype(2.0) * nu))
 
 def epsilon(u):
     return ufl.sym(ufl.grad(u))
@@ -91,20 +88,10 @@ def epsilon(u):
 def sigma(u):
     return dtype(2.0) * mu * epsilon(u) + lmbda * ufl.tr(epsilon(u)) * ufl.Identity(gdim)
 
-# exact solution for method of manufactured solutions testing
-xyz = ufl.SpatialCoordinate(msh)
-X = xyz[0] * (1.0 - xyz[0])
-Y = xyz[1] * (1.0 - xyz[1])
-Z = xyz[2] * (1.0 - xyz[2])
-
-u_exact = ufl.as_vector((0.0, 0.0, X*Y*Z))
-
-body_force = -ufl.div(sigma(u_exact))
-
 a = fem.form(ufl.inner(sigma(du), ufl.grad(v)) * dx, dtype=dtype)
 
-# # constant downwards force
-# body_force = fem.Constant(msh, np.array((0.0, 0.0, -1e-3), dtype=dtype))
+# constant downwards force
+body_force = fem.Constant(msh, np.array((0.0, 0.0, -1.0), dtype=dtype))
 
 # load form
 L = fem.form(ufl.inner(body_force, v) * dx, dtype=dtype)
@@ -148,17 +135,6 @@ for run in range(runs):
     solve_times.append(end_time - start_time)
 
 x.x.scatter_forward() # update ghost values
-
-# comput L2 error norm
-error_L2 = fem.form(ufl.inner(x - u_exact, x - u_exact) * dx, dtype=dtype)
-error_squared_local = fem.assemble_scalar(error_L2)
-error_squared = msh.comm.allreduce(error_squared_local, op=MPI.SUM)
-l2_error = np.sqrt(error_squared)
-h = 1.0 / n
-
-print(f"Polynomial order = {polynomial_order}")
-print(f"mesh size h = {h:.17e}")
-print (f"L2 error = {l2_error:.17e}")
 
 average_time = sum(solve_times) / runs
 print(f"Average solve time: {average_time:.6f}")

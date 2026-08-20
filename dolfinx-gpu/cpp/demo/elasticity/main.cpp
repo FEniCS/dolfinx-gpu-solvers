@@ -31,6 +31,7 @@
 #include <thrust/execution_policy.h>
 #include <thrust/fill.h>
 #include <thrust/transform.h>
+#include <thrust/inner_product.h>
 
 #include "jacobi.h"
 #include "p_multigrid.h"
@@ -55,10 +56,6 @@ int main(int argc, char* argv[])
 {
   dolfinx::init_logging(argc, argv);
   PetscInitialize(&argc, &argv, nullptr, nullptr);
-
-  PetscInt petsc_n;
-  PetscBool n_found;
-  PetscOptionsGetInt(nullptr, nullptr, "--n", &petsc_n, &n_found);
 
   po::options_description desc("Options");
   desc.add_options()("help,h", "Print usage message")(
@@ -122,6 +119,7 @@ int main(int argc, char* argv[])
     constexpr T lambda = E * nu / ((T(1) + nu) * (T(1) - T(2) * nu));
 
     Hierarchy hierarchy(mesh, cell_list, boundary_facets, lambda, mu);
+    using DeviceVector = typename Hierarchy::DeviceVector;
 
     for (const auto& config : smoothing_config)
     {
@@ -137,7 +135,6 @@ int main(int argc, char* argv[])
 
     std::cout << "Number of P1 DOFs = " << bs * index_map->size_global() << "\n";
 
-    using DeviceVector = typename Hierarchy::DeviceVector;
     DeviceVector b_device(fine_level.V->dofmap()->index_map, 3);
     fine_level.assemble_body_force(b_device, detail::ConstantBodyForce<T>{T(0), T(0), T(-1)}); // assemble body force vector with force in negative z direction
 
@@ -159,17 +156,6 @@ int main(int argc, char* argv[])
       hierarchy.v_cycle(z, r);
     };
 
-    // DeviceVector diagonal(fine_level.V->dofmap()->index_map, 3);
-    // DeviceVector diagonal_inverse(fine_level.V->dofmap()->index_map, 3);
-
-    // fine_level.assemble_diagonal(diagonal);
-
-    // thrust::transform(thrust::device, diagonal.array().begin(), diagonal.array().end(), fine_level.bc_marker.begin(), diagonal_inverse.array().begin(), invert_jacobi_diagonal<T>());
-
-    // auto jacobi_preconditioner = [&diagonal_inverse](DeviceVector& z, const DeviceVector& r)
-    // {
-    //   thrust::transform(thrust::device, r.array().begin(), r.array().end(), diagonal_inverse.array().begin(), z.array().begin(), thrust::multiplies<T>());
-    // };
 
     // timing 
     constexpr int runs = 1;
@@ -218,11 +204,6 @@ int main(int argc, char* argv[])
     auto x2 = std::make_shared<fem::Function<T>>(fine_level.V);
 
     thrust::copy(x_device.array().begin(), x_device.array().end(), x2->x()->array().begin());
-
-    const T local_error_squared = fine_level.compute_l2_error_squared(x_device, detail::ManufacturedSolution<T>{});
-    const T l2_error = std::sqrt(std::max(local_error_squared, T(0)));
-
-    std::cout << "L2 error: " << l2_error << "\n";
 
     std::cout << std::setprecision(17);
 

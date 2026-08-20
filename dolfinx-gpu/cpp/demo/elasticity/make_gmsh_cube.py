@@ -23,7 +23,8 @@ gmsh.model.addPhysicalGroup(2, boundary_tags, tag=1)
 gmsh.model.setPhysicalName(2, 1, "Boundary")
 
 ### control mesh size
-h = 0.1
+n = 100
+h = 1.0 / n
 
 gmsh.option.setNumber("Mesh.MeshSizeMin", h)
 gmsh.option.setNumber("Mesh.MeshSizeMax", h)

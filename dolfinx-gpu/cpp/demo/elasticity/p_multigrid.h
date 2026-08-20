@@ -45,7 +45,7 @@ enum class SmootherType
   Chebyshev
 };
 
-constexpr SmootherType smoother_type = SmootherType::Jacobi;
+constexpr SmootherType smoother_type = SmootherType::Chebyshev;
 
 
 namespace p_transfer
@@ -178,10 +178,6 @@ namespace p_multigrid_detail
 
     const std::vector<double> x = V.tabulate_dof_coordinates(false);
     const std::int32_t* dofs = V.dofmap()->map().data_handle();
-
-    std::cout << "Dof coordinate entries = " << x.size() << "\n";
-    std::cout << "Dofmap entries = " << V.dofmap()->map().size() << "\n";
-    std::cout << "Basis vector entries = " << basis[0].array().size() << "\n";
 
     const std::size_t num_coordinate_blocks = x.size() / 3;
     const std::size_t num_basis_blocks = basis[0].array().size() / bs;
@@ -431,42 +427,6 @@ class PMultigridHierarchy<FineP, NextCoarserP, RemainingOrders...>{
       thrust::fill(thrust::device, fine_correction.array().begin(), fine_correction.array().end(), T(0));
       prolong(coarse_correction, fine_correction);
 
-
-      // testing prolongation
-      level(fine_Ax, fine_correction);
-      thrust::transform(
-        thrust::device,
-        fine_residual.array().begin(),
-        fine_residual.array().end(),
-        fine_Ax.array().begin(),
-        fine_residual.array().begin(),
-        thrust::minus<T>()
-      );
-
-      restrict(fine_residual, coarse_rhs);
-
-      device_synchronize();
-
-      // ||r2_after||
-      T fine_norm_sq = thrust::inner_product(
-          thrust::device,
-          fine_residual.array().begin(),
-          fine_residual.array().end(),
-          fine_residual.array().begin(),
-          T(0));
-
-      // ||R r2_after||
-      T restricted_norm_sq = thrust::inner_product(
-          thrust::device,
-          coarse_rhs.array().begin(),
-          coarse_rhs.array().end(),
-          coarse_rhs.array().begin(),
-          T(0));
-
-      std::cout << "Fine residual after P1 correction = " << std::sqrt(fine_norm_sq) << '\n';
-
-      std::cout << "Restricted residual after P1 correction = " << std::sqrt(restricted_norm_sq) << '\n';
-
       // add correction to solution_FineP
       thrust::transform(thrust::device, solution.array().begin(), solution.array().end(), fine_correction.array().begin(), solution.array().begin(), thrust::plus<T>());
 
@@ -616,25 +576,7 @@ class PMultigridHierarchy<LastCoarserP>{
       #endif
 
 
-      PetscReal rhs_norm;
-      VecNorm(coarse_rhs_petsc, NORM_2, &rhs_norm);
-      std::cout << "Coarse level rhs norm: " << rhs_norm << "\n";
-
       KSPSolve(coarse_solver, coarse_rhs_petsc, coarse_solution_petsc);
-
-      PetscReal correction_norm;
-      VecNorm(coarse_solution_petsc, NORM_2, &correction_norm);
-      std::cout << "Coarse level correction norm: " << correction_norm << "\n";
-
-      Vec coarse_residual;
-      VecDuplicate(coarse_rhs_petsc, &coarse_residual);
-      MatMult(coarse_A, coarse_solution_petsc, coarse_residual);
-      VecAXPY(coarse_residual, -1.0, coarse_rhs_petsc);
-      PetscReal coarse_residual_norm;
-      VecNorm(coarse_residual, NORM_2, &coarse_residual_norm);
-      std::cout << "P1 true residual norm: " << coarse_residual_norm << "\n";
-      std::cout << "P1 relative residual norm: " << coarse_residual_norm / rhs_norm << "\n";
-      VecDestroy(&coarse_residual);
 
 
       #if defined(__HIP_PLATFORM_AMD__)
@@ -726,35 +668,35 @@ class PMultigridHierarchy<LastCoarserP>{
 
       // 3 displacement components per node
       MatSetBlockSize(coarse_A, level.V->dofmap()->index_map_bs());
-      }
+    }
 
 
-      void setup_gamg()
-      {
-        // set up the GAMG solver
-        MPI_Comm comm = level.V->mesh()->comm();
-        KSPCreate(comm, &coarse_solver);
+    void setup_gamg()
+    {
+      // set up the GAMG solver
+      MPI_Comm comm = level.V->mesh()->comm();
+      KSPCreate(comm, &coarse_solver);
 
-        KSPSetOperators(coarse_solver, coarse_A, coarse_A); // matrix for coarse solve
-        KSPSetOptionsPrefix(coarse_solver, "coarse_"); // set prefix for command line options
-        KSPSetType(coarse_solver, KSPPREONLY); // apply GAMG as a preconditioner to CG iteration
-        // KSPSetTolerances(coarse_solver, 1e-5, PETSC_DEFAULT, PETSC_DEFAULT, 10); // set tolerances for coarse solve
-        KSPSetInitialGuessNonzero(coarse_solver, PETSC_FALSE);
-        KSPSetNormType(coarse_solver, KSP_NORM_UNPRECONDITIONED);
+      KSPSetOperators(coarse_solver, coarse_A, coarse_A); // matrix for coarse solve
+      KSPSetOptionsPrefix(coarse_solver, "coarse_"); // set prefix for command line options
+      KSPSetType(coarse_solver, KSPPREONLY); // apply GAMG as a preconditioner to CG iteration
+      // KSPSetTolerances(coarse_solver, 1e-8, PETSC_DEFAULT, PETSC_DEFAULT, 100); // set tolerances for coarse solve
+      KSPSetInitialGuessNonzero(coarse_solver, PETSC_FALSE);
+      KSPSetNormType(coarse_solver, KSP_NORM_UNPRECONDITIONED);
 
-        PC pc;
-        KSPGetPC(coarse_solver, &pc);
-        PCSetType(pc, PCGAMG);
-        PCGAMGSetCoarseEqLim(pc, 1000);
-        KSPSetFromOptions(coarse_solver); // apply any command line options
-        KSPSetUp(coarse_solver); // actually construct the AMG hierarchy 
-      }
+      PC pc;
+      KSPGetPC(coarse_solver, &pc);
+      PCSetType(pc, PCGAMG);
+      PCGAMGSetCoarseEqLim(pc, 1000);
+      KSPSetFromOptions(coarse_solver); // apply any command line options
+      KSPSetUp(coarse_solver); // actually construct the AMG hierarchy 
+    }
 
 
-      void attach_near_nullspace()
-      {
-        MatNullSpace ns = p_multigrid_detail::build_near_nullspace(*level.V);
-        MatSetNearNullSpace(coarse_A, ns);
-        MatNullSpaceDestroy(&ns);
-      }
+    void attach_near_nullspace()
+    {
+      MatNullSpace ns = p_multigrid_detail::build_near_nullspace(*level.V);
+      MatSetNearNullSpace(coarse_A, ns);
+      MatNullSpaceDestroy(&ns);
+    }
   };
