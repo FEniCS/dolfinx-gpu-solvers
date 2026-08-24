@@ -17,6 +17,8 @@
 #include <iostream>
 #include <iomanip>
 
+#include "timings.h"
+
 namespace elasticity
 {
     // compute the linear combination of two vectors i.e. result = alpha * x + y
@@ -41,8 +43,7 @@ namespace elasticity
             CGSolver(std::shared_ptr<const dolfinx::common::IndexMap> _map, int _bs)
             : _r(std::make_unique<Vector>(_map, _bs)), // residual vector
               _p(std::make_unique<Vector>(_map, _bs)), // search direction vector
-              _y(std::make_unique<Vector>(_map, _bs)), // matrix-vector product vector
-              _diag_inv(std::make_unique<Vector>(_map, _bs)) // inverse of the diagonal of A
+              _y(std::make_unique<Vector>(_map, _bs)) // matrix-vector product vector
             {
             }
 
@@ -55,6 +56,7 @@ namespace elasticity
                 _max_iter = max_iter;
             }
 
+
             // relative tolerance for convergence
             void set_tolerance(T tol){
                 if (tol <= T(0))
@@ -63,23 +65,22 @@ namespace elasticity
                 _rtol = tol;
             }
 
-            void set_diag_inverse(const Vector& diag_inv){
-                if (diag_inv.array().size() != _diag_inv->array().size())
-                    throw std::runtime_error("Diagonal inverse vector must be the same size as the solver's diagonal inverse vector");
-                
-                copy(*_diag_inv, diag_inv);
-            }
 
             template <typename Operator, typename Preconditioner>
             int solve(Operator& A, Vector& x, const Vector& b, Preconditioner& M){
                 if (x.array().size() != b.array().size())
                     throw std::runtime_error("Vectors x and b must be the same size");
 
-                // compute initial residual r_0 = b - A*x_0
-                A(*_y, x); // _Ap = A*x
-                axpy(*_r, T(-1), *_y, b); // _r = b - A*x
+                time_gpu(solve_timings.outer_matvec, [&](){
+                    // compute initial residual r_0 = b - A*x_0
+                    A(*_y, x); // _Ap = A*x
+                    axpy(*_r, T(-1), *_y, b); // _r = b - A*x
+                });
 
-                const T residual_squared0 = dot(*_r, *_r);
+                T residual_squared0;
+                time_gpu(solve_timings.cg_dots, [&](){
+                    residual_squared0 = dot(*_r, *_r);
+                });
 
                 // compute the tolerance based on the initial residual norm
                 const T rtol2 = _rtol * _rtol;
@@ -89,9 +90,15 @@ namespace elasticity
 
                 M(*_y, *_r); // z0 = M^{-1} * r0
 
-                copy(*_p, *_y); // p0 = z0
+                time_gpu(solve_timings.cg_vector_ops, [&](){
+                    // copy z0 to p0
+                    copy(*_p, *_y); // p0 = z0
+                });
 
-                T rho = dot(*_r, *_y); // rho0 = r0^T * z0
+                T rho;
+                time_gpu(solve_timings.cg_dots, [&](){
+                    rho = dot(*_r, *_y); // rho0 = r0^T * z0
+                });
 
                 if (rho <= T(0)){
                     throw std::runtime_error("Preconditioner is not positive definite");
@@ -100,11 +107,17 @@ namespace elasticity
                 // main CG iteration loop
                 int k = 0;
                 while (k < _max_iter){
-                    // compute matrix-vector product Ap = A*p
-                    A(*_y, *_p); // _y = A*p
+                    time_gpu(solve_timings.outer_matvec, [&](){
+                        // compute matrix-vector product Ap = A*p
+                        A(*_y, *_p); // _y = A*p
+                    });
 
                     // check that p^TAp is positive i.e. A is positive definite
-                    const T pAp = dot(*_p, *_y);
+                    T pAp;
+                    time_gpu(solve_timings.cg_dots, [&](){
+                        pAp = dot(*_p, *_y);
+                    });
+
                     if (!(pAp > T(0))){
                         throw std::runtime_error("Matrix A is not positive definite");
                     }
@@ -112,13 +125,18 @@ namespace elasticity
                     // compute alpha = (r^T * r) / (p^T * Ap)
                     const T alpha = rho / pAp;
 
-                    // update solution x = x + alpha * p
-                    axpy(x, alpha, *_p, x); // x = alpha * p + x
+                    time_gpu(solve_timings.cg_vector_ops, [&](){
+                        // update solution x = x + alpha * p
+                        axpy(x, alpha, *_p, x); // x = alpha * p + x
 
-                    // update residual r = r - alpha * Ap
-                    axpy(*_r, T(-alpha), *_y, *_r); // r = -alpha * Ap + r
+                        // update residual r = r - alpha * Ap
+                        axpy(*_r, T(-alpha), *_y, *_r); // r = -alpha * Ap + r
+                    });
 
-                    const T residual_squared = dot(*_r, *_r);
+                    T residual_squared;
+                    time_gpu(solve_timings.cg_dots, [&](){
+                        residual_squared = dot(*_r, *_r);
+                    });
 
                     std::cout
                         << "Outer CG iteration " << k + 1
@@ -135,7 +153,10 @@ namespace elasticity
                     M(*_y, *_r); // z = M^{-1} * r
 
                     // compute new residual norm
-                    T rho_new = dot(*_r, *_y); // rho_new = r^T * z
+                    T rho_new;
+                    time_gpu(solve_timings.cg_dots, [&](){
+                        rho_new = dot(*_r, *_y); // rho_new = r^T * z
+                    });
 
                     if (rho_new <= T(0)){
                         throw std::runtime_error("Preconditioner is not positive definite");
@@ -144,10 +165,10 @@ namespace elasticity
                     // compute beta = (r_new^T * r_new) / (r^T * r)
                     const T beta = rho_new / rho;
 
-                    // update search direction 
-                    // with jacobi: p = D^{-1} * r + beta * p
-                    // without jacobi: p = r + beta * p
-                    axpy(*_p, beta, *_p, *_y); // p = beta * p + r
+                    time_gpu(solve_timings.cg_vector_ops, [&](){
+                        // update search direction p = z + beta * p
+                        axpy(*_p, beta, *_p, *_y); // p = beta * p + z
+                    });
 
                     // update residual norm for next iteration
                     rho = rho_new;
@@ -196,23 +217,10 @@ namespace elasticity
                 thrust::transform(thrust::device, x_values.begin(), x_values.end(), y_values.begin(), result_values.begin(), axpyOperation<T>{alpha});
             }
 
-            // compute the pointwise multiplication of two vectors i.e. result = x * y
-            static void pointwise_mult(Vector& result, const Vector& x, const Vector& y){
-                auto& result_values = result.array();
-                const auto& x_values = x.array();
-                const auto& y_values = y.array();
-
-                if (result_values.size() != x_values.size() || result_values.size() != y_values.size()){
-                    throw std::runtime_error("Vectors must be the same size for pointwise multiplication");
-                }
-
-                thrust::transform(thrust::device, x_values.begin(), x_values.end(), y_values.begin(), result_values.begin(), thrust::multiplies<T>());
-            }
 
             // working vectors
             std::unique_ptr<Vector> _r; // residual vector
             std::unique_ptr<Vector> _p; // search direction vector
             std::unique_ptr<Vector> _y; // matrix-vector product vector
-            std::unique_ptr<Vector> _diag_inv; // inverse of the diagonal of A
     };
 } // namespace elasticity

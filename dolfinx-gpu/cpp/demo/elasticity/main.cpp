@@ -5,7 +5,6 @@
 // SPDX-License-Identifier: MIT
 //
 
-#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
@@ -15,12 +14,9 @@
 #include <memory>
 #include <numeric>
 #include <vector>
-#include <fstream>
-#include <limits>
 
 #include <boost/program_options.hpp>
 #include <dolfinx.h>
-#include <dolfinx/fem/Constant.h>
 #include <dolfinx/la/Vector.h>
 #include <petscsys.h>
 #include <dolfinx/io/XDMFFile.h>
@@ -30,8 +26,6 @@
 #include <thrust/device_vector.h>
 #include <thrust/execution_policy.h>
 #include <thrust/fill.h>
-#include <thrust/transform.h>
-#include <thrust/inner_product.h>
 
 #include "jacobi.h"
 #include "p_multigrid.h"
@@ -43,19 +37,25 @@ using namespace dolfinx;
 namespace po = boost::program_options;
 
 // polynomial orders from highest to lowest for p-multigrid
-using Hierarchy = PMultigridHierarchy<2, 1>;
+using Hierarchy = PMultigridHierarchy<1>;
 
-// p-multigrid smoothing configuration
-struct SmoothingConfig{int order; int pre; int post;};
+// // p-multigrid smoothing configuration
+// struct SmoothingConfig{int order; int pre; int post;};
 
-constexpr std::array smoothing_config = {
-    SmoothingConfig{2, 3, 3}, // 3 pre-smoothing and 3 post-smoothing steps for P2
-};
+// constexpr std::array smoothing_config = {
+//     SmoothingConfig{2, 3, 3}, // 3 pre-smoothing and 3 post-smoothing steps for P2
+// };
 
 int main(int argc, char* argv[])
 {
   dolfinx::init_logging(argc, argv);
   PetscInitialize(&argc, &argv, nullptr, nullptr);
+
+  int rank;
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+
+  const int device = select_gpu_for_rank(MPI_COMM_WORLD);
+  std::cout << "MPI rank " << rank << " using GPU " << device << "\n";
 
   po::options_description desc("Options");
   desc.add_options()("help,h", "Print usage message")(
@@ -70,19 +70,19 @@ int main(int argc, char* argv[])
             vm);
 
   {
-    // std::int32_t n = vm["n"].as<std::size_t>();
-    // std::cout << "n=" << n << "\n";
-    // auto part
-    //     = mesh::create_cell_partitioner(dolfinx::mesh::GhostMode::none, 2);
-    // auto mesh = std::make_shared<mesh::Mesh<U>>(mesh::create_box<U>(
-    //     MPI_COMM_WORLD, {{{0.0, 0.0, 0.0}, {1.0, 1.0, 1.0}}}, {n, n, n},
-    //     mesh::CellType::tetrahedron, part));
+    std::int32_t n = vm["n"].as<std::size_t>();
+    std::cout << "n=" << n << "\n";
+    auto part
+        = mesh::create_cell_partitioner(dolfinx::mesh::GhostMode::none, 2);
+    auto mesh = std::make_shared<mesh::Mesh<U>>(mesh::create_box<U>(
+        MPI_COMM_WORLD, {{{0.0, 0.0, 0.0}, {1.0, 1.0, 1.0}}}, {n, n, n},
+        mesh::CellType::tetrahedron, part));
     
-    io::XDMFFile xdmf_file(MPI_COMM_WORLD, "/home/af854/dolfinx-gpu-solvers/dolfinx-gpu/Crescendo_NX20mm.xdmf", "r");
-    auto mesh = std::make_shared<mesh::Mesh<U>>(xdmf_file.read_mesh(
-      fem::CoordinateElement<U>(mesh::CellType::tetrahedron, 1),
-      mesh::GhostMode::none,
-      "mesh"));
+    // io::XDMFFile xdmf_file(MPI_COMM_WORLD, "/home/af854/dolfinx-gpu-solvers/dolfinx-gpu/cpp/demo/elasticity/geometry.xdmf", "r");
+    // auto mesh = std::make_shared<mesh::Mesh<U>>(xdmf_file.read_mesh(
+    //   fem::CoordinateElement<U>(mesh::CellType::tetrahedron, 1),
+    //   mesh::GhostMode::none,
+    //   "mesh"));
 
     // Create list of all cells
     std::vector<std::int32_t> cell_list_host(
@@ -100,8 +100,8 @@ int main(int argc, char* argv[])
       [](auto x){ // x is a table of coordinates
       std::vector<std::int8_t> marker(x.extent(1), false); // create a list called marker which has one entry for each point being checked
             
-      constexpr T xmin = T(2588.61044);
-      constexpr T tol = T(1e-2);
+      constexpr T xmin = T(0);
+      constexpr T tol = T(1e-10);
 
       // mark points on the left boundary (x=0) as true
       for (std::size_t p = 0; p < x.extent(1); ++p) // loop over all points
@@ -118,22 +118,37 @@ int main(int argc, char* argv[])
     constexpr T mu = E / (T(2) * (T(1) + nu));
     constexpr T lambda = E * nu / ((T(1) + nu) * (T(1) - T(2) * nu));
 
+    solve_timings.reset();
+    device_synchronize();
+
+    const auto setup_start =std::chrono::high_resolution_clock::now();
+
     Hierarchy hierarchy(mesh, cell_list, boundary_facets, lambda, mu);
+    
+    device_synchronize();
+
+    const auto setup_end = std::chrono::high_resolution_clock::now();
+
+    const double hierarchy_setup_time = std::chrono::duration<double>(setup_end - setup_start).count();
+
+    std::cout << "Hierarchy setup time: " << hierarchy_setup_time << " seconds\n";
+    setup_timings.print(hierarchy_setup_time);
+
+
     using DeviceVector = typename Hierarchy::DeviceVector;
 
-    for (const auto& config : smoothing_config)
-    {
-        hierarchy.set_smoothing_steps(config.order, config.pre, config.post);
-    }
+    // for (const auto& config : smoothing_config)
+    // {
+    //     hierarchy.set_smoothing_steps(config.order, config.pre, config.post);
+    // }
 
     auto& fine_level = hierarchy.level;
 
     const auto index_map = fine_level.V->dofmap()->index_map;
     const int bs = fine_level.V->dofmap()->index_map_bs();
 
-    std::cout << "Number of P1 nodes = " << index_map->size_global() << "\n";
-
-    std::cout << "Number of P1 DOFs = " << bs * index_map->size_global() << "\n";
+    std::cout << "Number of P" << fine_level.order << " nodes = " << index_map->size_global() << "\n";
+    std::cout << "Number of P" << fine_level.order << " DOFs = " << bs * index_map->size_global() << "\n";
 
     DeviceVector b_device(fine_level.V->dofmap()->index_map, 3);
     fine_level.assemble_body_force(b_device, detail::ConstantBodyForce<T>{T(0), T(0), T(-1)}); // assemble body force vector with force in negative z direction
@@ -196,7 +211,7 @@ int main(int argc, char* argv[])
 
     const double average_time = std::accumulate(times.begin(), times.end(), 0.0) / times.size();
     std::cout << "Average cg + multigrid solve time: " << average_time << " seconds\n";
-
+    solve_timings.print(average_time);
     std::cout << "Initial residual norm: " << initial_residual_norm << "\n";
     std::cout << "Final residual norm: " << final_residual_norm << "\n";
     std::cout << "Relative residual norm: " << relative_residual_norm << "\n";

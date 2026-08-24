@@ -313,16 +313,15 @@ class PMultigridHierarchy<FineP, NextCoarserP, RemainingOrders...>{
         coarse_correction(coarser.level.V->dofmap()->index_map, 3),
         fine_correction(level.V->dofmap()->index_map, 3)
     {
-        // build interpolation matrix from level CoarseP to level FineP
-        auto [interpolation_host, interpolation_shape] = basix::compute_interpolation_operator(
-            coarser.level.elem, level.elem
-        );
 
-        interpolation.assign(interpolation_host.begin(), interpolation_host.end()); 
-        build_fine_node_owners();
+      auto interpolation_data = basix::compute_interpolation_operator(coarser.level.elem, level.elem);
+      interpolation.assign(interpolation_data.first.begin(), interpolation_data.first.end());
+      
+      time_gpu(setup_timings.build_owners, [&]() { build_fine_node_owners(); });
 
-        // assemble inverse of diagonal
-        level.assemble_diagonal(diagonal_inverse);
+      // assemble inverse of diagonal
+      time_gpu(setup_timings.assemble_diagonal, [&]() { 
+        level.assemble_diagonal(diagonal_inverse); 
         thrust::transform(
           thrust::device, diagonal_inverse.array().begin(), 
           diagonal_inverse.array().end(),
@@ -330,12 +329,14 @@ class PMultigridHierarchy<FineP, NextCoarserP, RemainingOrders...>{
           diagonal_inverse.array().begin(),
           invert_jacobi_diagonal<T>()
         );
+      });
 
-        if constexpr (smoother_type == SmootherType::Chebyshev)
-        {
-            lambda_max = estimate_lambda_max(level, diagonal_inverse, level.bc_marker, chebyshev_previous, chebyshev_next, fine_Ax, fine_residual, 10);
-            std::cout << "Estimated lambda_max = " << lambda_max << "\n";
-        }
+      if constexpr (smoother_type == SmootherType::Chebyshev)
+      {
+        time_gpu(setup_timings.lambda_max, [&]() {
+          lambda_max = estimate_lambda_max(level, diagonal_inverse, level.bc_marker, chebyshev_previous, chebyshev_next, fine_Ax, fine_residual, 10);
+        });
+      }
     }
 
 
@@ -405,33 +406,45 @@ class PMultigridHierarchy<FineP, NextCoarserP, RemainingOrders...>{
     template <typename Vector>
     void v_cycle(Vector& solution, const Vector& rhs)
     {
-      // pre-smoothing on level FineP
-      smooth(solution, rhs, pre_smooth_steps);
+      time_gpu(solve_timings.pre_smooth, [&](){
+        // pre-smoothing on level FineP
+        smooth(solution, rhs, pre_smooth_steps);
+      });
 
-      // compute residual_FineP = rhs_FineP - A_FineP * solution_FineP
-      level(fine_Ax, solution);
-      thrust::transform(thrust::device, rhs.array().begin(), rhs.array().end(), fine_Ax.array().begin(), fine_residual.array().begin(), thrust::minus<T>());
+      time_gpu(solve_timings.vcycle_residual, [&](){
+        // compute residual_FineP = rhs_FineP - A_FineP * solution_FineP
+        level(fine_Ax, solution);
+        thrust::transform(thrust::device, rhs.array().begin(), rhs.array().end(), fine_Ax.array().begin(), fine_residual.array().begin(), thrust::minus<T>());
+      });
 
-      // restrict residual_FineP to level CoarseP
-      // apply restriction operator to residual_FineP to get rhs_coarse:
-      // rhs_coarse = R * residual_FineP where R = P^T
-      restrict(fine_residual, coarse_rhs);
+      time_gpu(solve_timings.restriction, [&](){
+        // restrict residual_FineP to level CoarseP
+        // apply restriction operator to residual_FineP to get rhs_coarse:
+        // rhs_coarse = R * residual_FineP where R = P^T
+        restrict(fine_residual, coarse_rhs);
+      });
 
       // set level CoarseP correction to 0
       thrust::fill(thrust::device, coarse_correction.array().begin(), coarse_correction.array().end(), T(0));
 
-      // recursively solve the correction problem
-      coarser.v_cycle(coarse_correction, coarse_rhs);
+      time_gpu(solve_timings.coarse_solve, [&](){
+        // recursively solve the correction problem
+        coarser.v_cycle(coarse_correction, coarse_rhs);
+      });
 
-      // prolongate correction_coarse from level CoarseP to level FineP
-      thrust::fill(thrust::device, fine_correction.array().begin(), fine_correction.array().end(), T(0));
-      prolong(coarse_correction, fine_correction);
+      time_gpu(solve_timings.prolongation_correction, [&](){
+        // prolongate correction_coarse from level CoarseP to level FineP
+        thrust::fill(thrust::device, fine_correction.array().begin(), fine_correction.array().end(), T(0));
+        prolong(coarse_correction, fine_correction);
 
-      // add correction to solution_FineP
-      thrust::transform(thrust::device, solution.array().begin(), solution.array().end(), fine_correction.array().begin(), solution.array().begin(), thrust::plus<T>());
+        // add correction to solution_FineP
+        thrust::transform(thrust::device, solution.array().begin(), solution.array().end(), fine_correction.array().begin(), solution.array().begin(), thrust::plus<T>());
+      });
 
-      // post-smoothing on level FineP
-      smooth(solution, rhs, post_smooth_steps);
+      time_gpu(solve_timings.post_smooth, [&](){
+        // post-smoothing on level FineP
+        smooth(solution, rhs, post_smooth_steps);
+      });
     }
 
     private:
@@ -518,8 +531,6 @@ class PMultigridHierarchy<LastCoarserP>{
     Vec coarse_solution_petsc = nullptr; // PETSc vector for coarse solve solution
     KSP coarse_solver = nullptr; // PETSc KSP solver for coarse solve
 
-    // physical coordinates of the coarse mesh nodes
-    std::vector<T> coarse_coordinates;
 
   public:
     template <typename MeshPtr, typename CellList, typename BoundaryLocator>
@@ -531,14 +542,12 @@ class PMultigridHierarchy<LastCoarserP>{
       const T mu)
       : level(mesh_ptr, cell_list, boundary_locator, lambda, mu),
         coarse_bc(std::array<T, 3>{T(0), T(0), T(0)}, level.bc_nodes, level.V),
-        coarse_form(dolfinx::fem::create_form<T>(*get_coarse_ufcx_form<LastCoarserP>(), {level.V, level.V}, {}, {}, {}, {}, level.V->mesh())),
-        coarse_coordinates(level.V->tabulate_dof_coordinates(false))
+        coarse_form(dolfinx::fem::create_form<T>(*get_coarse_ufcx_form<LastCoarserP>(), {level.V, level.V}, {}, {}, {}, {}, level.V->mesh()))
     {
-      assemble_coarse_matrix();
-      attach_near_nullspace();
-      setup_gamg();
-      create_petsc_vectors();
-
+      time_gpu(setup_timings.matrix_assembly, [&]() { assemble_coarse_matrix(); });
+      time_gpu(setup_timings.nullspace_setup, [&]() { attach_near_nullspace(); });
+      time_gpu(setup_timings.gamg_setup, [&]() { setup_gamg(); });
+      time_gpu(setup_timings.petsc_vector_setup, [&]() { create_petsc_vectors(); });
     }
 
     ~PMultigridHierarchy()
@@ -645,11 +654,7 @@ class PMultigridHierarchy<LastCoarserP>{
       auto pattern = dolfinx::fem::create_sparsity_pattern(coarse_form);
       pattern.finalize();
 
-      #if defined(__HIP_PLATFORM_AMD__)
-          coarse_A = dolfinx::la::petsc::create_matrix(level.V->mesh()->comm(), pattern, "aij");
-      #else
-          coarse_A = dolfinx::la::petsc::create_matrix(level.V->mesh()->comm(), pattern, "aij");
-      #endif
+      coarse_A = dolfinx::la::petsc::create_matrix(level.V->mesh()->comm(), pattern, "aij");
 
       MatZeroEntries(coarse_A);
 
@@ -682,7 +687,7 @@ class PMultigridHierarchy<LastCoarserP>{
       KSPSetType(coarse_solver, KSPPREONLY); // apply GAMG as a preconditioner to CG iteration
       // KSPSetTolerances(coarse_solver, 1e-8, PETSC_DEFAULT, PETSC_DEFAULT, 100); // set tolerances for coarse solve
       KSPSetInitialGuessNonzero(coarse_solver, PETSC_FALSE);
-      KSPSetNormType(coarse_solver, KSP_NORM_UNPRECONDITIONED);
+      // KSPSetNormType(coarse_solver, KSP_NORM_UNPRECONDITIONED);
 
       PC pc;
       KSPGetPC(coarse_solver, &pc);
