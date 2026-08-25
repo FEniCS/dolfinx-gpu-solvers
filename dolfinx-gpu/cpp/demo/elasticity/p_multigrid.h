@@ -427,10 +427,8 @@ class PMultigridHierarchy<FineP, NextCoarserP, RemainingOrders...>{
       // set level CoarseP correction to 0
       thrust::fill(thrust::device, coarse_correction.array().begin(), coarse_correction.array().end(), T(0));
 
-      time_gpu(solve_timings.coarse_solve, [&](){
-        // recursively solve the correction problem
-        coarser.v_cycle(coarse_correction, coarse_rhs);
-      });
+      // recursively solve the correction problem
+      coarser.v_cycle(coarse_correction, coarse_rhs);
 
       time_gpu(solve_timings.prolongation_correction, [&](){
         // prolongate correction_coarse from level CoarseP to level FineP
@@ -584,8 +582,9 @@ class PMultigridHierarchy<LastCoarserP>{
         VecCUDAPlaceArray(coarse_solution_petsc, solution.array().data().get());
       #endif
 
-
-      KSPSolve(coarse_solver, coarse_rhs_petsc, coarse_solution_petsc);
+      time_gpu(solve_timings.coarse_solve, [&]() {
+        KSPSolve(coarse_solver, coarse_rhs_petsc, coarse_solution_petsc);
+      });
 
 
       #if defined(__HIP_PLATFORM_AMD__)
@@ -693,6 +692,10 @@ class PMultigridHierarchy<LastCoarserP>{
       KSPGetPC(coarse_solver, &pc);
       PCSetType(pc, PCGAMG);
       PCGAMGSetCoarseEqLim(pc, 1000);
+
+      PetscReal threshold = 0.0;
+      PCGAMGSetThreshold(pc, &threshold, 1);
+      
       KSPSetFromOptions(coarse_solver); // apply any command line options
       KSPSetUp(coarse_solver); // actually construct the AMG hierarchy 
     }

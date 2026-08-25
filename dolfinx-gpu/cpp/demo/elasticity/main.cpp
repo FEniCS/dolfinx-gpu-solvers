@@ -37,14 +37,14 @@ using namespace dolfinx;
 namespace po = boost::program_options;
 
 // polynomial orders from highest to lowest for p-multigrid
-using Hierarchy = PMultigridHierarchy<1>;
+using Hierarchy = PMultigridHierarchy<2, 1>;
 
-// // p-multigrid smoothing configuration
-// struct SmoothingConfig{int order; int pre; int post;};
+// p-multigrid smoothing configuration
+struct SmoothingConfig{int order; int pre; int post;};
 
-// constexpr std::array smoothing_config = {
-//     SmoothingConfig{2, 3, 3}, // 3 pre-smoothing and 3 post-smoothing steps for P2
-// };
+constexpr std::array smoothing_config = {
+    SmoothingConfig{2, 3, 3}, // 3 pre-smoothing and 3 post-smoothing steps for P2
+};
 
 int main(int argc, char* argv[])
 {
@@ -71,18 +71,18 @@ int main(int argc, char* argv[])
 
   {
     std::int32_t n = vm["n"].as<std::size_t>();
-    std::cout << "n=" << n << "\n";
-    auto part
-        = mesh::create_cell_partitioner(dolfinx::mesh::GhostMode::none, 2);
-    auto mesh = std::make_shared<mesh::Mesh<U>>(mesh::create_box<U>(
-        MPI_COMM_WORLD, {{{0.0, 0.0, 0.0}, {1.0, 1.0, 1.0}}}, {n, n, n},
-        mesh::CellType::tetrahedron, part));
+    // std::cout << "n=" << n << "\n";
+    // auto part
+    //     = mesh::create_cell_partitioner(dolfinx::mesh::GhostMode::none, 2);
+    // auto mesh = std::make_shared<mesh::Mesh<U>>(mesh::create_box<U>(
+    //     MPI_COMM_WORLD, {{{0.0, 0.0, 0.0}, {1.0, 1.0, 1.0}}}, {n, n, n},
+    //     mesh::CellType::tetrahedron, part));
     
-    // io::XDMFFile xdmf_file(MPI_COMM_WORLD, "/home/af854/dolfinx-gpu-solvers/dolfinx-gpu/cpp/demo/elasticity/geometry.xdmf", "r");
-    // auto mesh = std::make_shared<mesh::Mesh<U>>(xdmf_file.read_mesh(
-    //   fem::CoordinateElement<U>(mesh::CellType::tetrahedron, 1),
-    //   mesh::GhostMode::none,
-    //   "mesh"));
+    io::XDMFFile xdmf_file(MPI_COMM_WORLD, "/home/af854/dolfinx-gpu-solvers/dolfinx-gpu/Crescendo_NX20mm.xdmf", "r");
+    auto mesh = std::make_shared<mesh::Mesh<U>>(xdmf_file.read_mesh(
+      fem::CoordinateElement<U>(mesh::CellType::tetrahedron, 1),
+      mesh::GhostMode::none,
+      "mesh"));
 
     // Create list of all cells
     std::vector<std::int32_t> cell_list_host(
@@ -100,8 +100,8 @@ int main(int argc, char* argv[])
       [](auto x){ // x is a table of coordinates
       std::vector<std::int8_t> marker(x.extent(1), false); // create a list called marker which has one entry for each point being checked
             
-      constexpr T xmin = T(0);
-      constexpr T tol = T(1e-10);
+      constexpr T xmin = T(2588.61044);
+      constexpr T tol = T(1e-2);
 
       // mark points on the left boundary (x=0) as true
       for (std::size_t p = 0; p < x.extent(1); ++p) // loop over all points
@@ -137,10 +137,10 @@ int main(int argc, char* argv[])
 
     using DeviceVector = typename Hierarchy::DeviceVector;
 
-    // for (const auto& config : smoothing_config)
-    // {
-    //     hierarchy.set_smoothing_steps(config.order, config.pre, config.post);
-    // }
+    for (const auto& config : smoothing_config)
+    {
+        hierarchy.set_smoothing_steps(config.order, config.pre, config.post);
+    }
 
     auto& fine_level = hierarchy.level;
 
