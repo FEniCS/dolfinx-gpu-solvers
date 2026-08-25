@@ -64,10 +64,14 @@ struct GPUSelection
   int device;
 };
 
-inline GPUSelection select_gpu_for_rank(MPI_Comm comm)
-{
+inline GPUSelection select_gpu_for_rank(MPI_Comm comm){
   MPI_Comm local_comm;
-  MPI_Comm_split_type(comm, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &local_comm);
+  MPI_Comm_split_type(
+      comm,
+      MPI_COMM_TYPE_SHARED,
+      0,
+      MPI_INFO_NULL,
+      &local_comm);
 
   int local_rank;
   MPI_Comm_rank(local_comm, &local_rank);
@@ -75,32 +79,32 @@ inline GPUSelection select_gpu_for_rank(MPI_Comm comm)
   int num_devices = 0;
 
   #if defined(__HIP__)
-    hipGetDeviceCount(&num_devices);
+    err_check(hipGetDeviceCount(&num_devices));
+
     const int device = local_rank % num_devices;
-    hipSetDevice(device);
+    err_check(hipSetDevice(device));
+
+    char pci_bus_id[32];
+    err_check(hipDeviceGetPCIBusId(
+        pci_bus_id, sizeof(pci_bus_id), device));
   #else
-    cudaGetDeviceCount(&num_devices);
+    err_check(cudaGetDeviceCount(&num_devices));
+
     const int device = local_rank % num_devices;
-    cudaSetDevice(device);
+    err_check(cudaSetDevice(device));
+
+    char pci_bus_id[32];
+    err_check(cudaDeviceGetPCIBusId(
+        pci_bus_id, sizeof(pci_bus_id), device));
   #endif
-
-  MPI_Comm_free(&local_comm);
-
-  const char* visible = std::getenv("CUDA_VISIBLE_DEVICES");
 
   std::cout << "local rank " << local_rank
             << ", num visible GPUs = " << num_devices
-            << ", CUDA_VISIBLE_DEVICES = "
-            << (visible ? visible : "not set")
+            << ", device " << device
+            << ", PCI bus " << pci_bus_id
             << "\n";
 
-  char pci_bus_id[32];
-  cudaDeviceGetPCIBusId(pci_bus_id, sizeof(pci_bus_id), device);
-
-  std::cout << "local rank " << local_rank
-            << " CUDA device " << device
-            << " PCI bus " << pci_bus_id
-            << "\n";
+  MPI_Comm_free(&local_comm);
 
   return {local_rank, device};
 }
