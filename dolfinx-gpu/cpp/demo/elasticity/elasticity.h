@@ -349,10 +349,10 @@ __global__ void elasticity_diagonal(
 /// @param cell_dofs DofMap
 /// @param cells List of cells to integrate over
 
-template <int P, typename T, typename ContainerT, typename ContainerI, typename ContainerB>
+template <int P, typename T, typename ContainerT, typename ScatterContainer, typename ContainerI, typename ContainerB>
 
-void assemble_elasticity_action(dolfinx::la::Vector<T, ContainerT>& b,
-                                const dolfinx::la::Vector<T, ContainerT>& u,
+void assemble_elasticity_action(dolfinx::la::Vector<T, ContainerT, ScatterContainer>& b,
+                                const dolfinx::la::Vector<T, ContainerT, ScatterContainer>& u,
                                 const ContainerT& phi_data, 
                                 const ContainerT& K,
                                 const ContainerT& wdetJ,
@@ -373,18 +373,12 @@ void assemble_elasticity_action(dolfinx::la::Vector<T, ContainerT>& b,
       b.array().data().get(), u.array().data().get(), phi_data.data().get(),
       K.data().get(), wdetJ.data().get(), cell_dofs.data().get(),
       cells.data().get(), cells.size(), bc_marker.data().get(), lambda, mu);
-
-  constexpr int identity_threads = 256;
-  const std::size_t identity_blocks = (b.array().size() + identity_threads - 1) / identity_threads;
-  
-  detail::set_identity_rows<T><<<static_cast<unsigned int>(identity_blocks), identity_threads>>>(
-      b.array().data().get(), u.array().data().get(), bc_marker.data().get(), b.array().size());
 }
 
 
-template <int P, typename T, typename ContainerT, typename ContainerI, typename ContainerB>
+template <int P, typename T, typename ContainerT, typename ScatterContainer, typename ContainerI, typename ContainerB>
 
-void assemble_elasticity_diagonal(dolfinx::la::Vector<T, ContainerT>& diagonal,
+void assemble_elasticity_diagonal(dolfinx::la::Vector<T, ContainerT, ScatterContainer>& diagonal,
                                   const ContainerT& phi_data, 
                                   const ContainerT& K,
                                   const ContainerT& wdetJ,

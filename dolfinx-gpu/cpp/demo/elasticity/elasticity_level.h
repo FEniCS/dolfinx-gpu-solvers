@@ -80,7 +80,7 @@ class ElasticityLevel{
     using DeviceScalarVector = thrust::device_vector<T>;
     using DeviceIndexVector = thrust::device_vector<std::int32_t>;
     using DeviceMarkerVector = thrust::device_vector<std::int8_t>;
-    using DeviceVector = dolfinx::la::Vector<T, DeviceScalarVector>;
+    using DeviceVector = dolfinx::la::Vector<T, DeviceScalarVector, DeviceIndexVector>;
 
     static constexpr int order = P;
     static constexpr int ndofs = detail::elasticity_traits<P>::ndofs;
@@ -135,10 +135,26 @@ class ElasticityLevel{
     }
 
     // apply elasticity operator for this level
-    void operator()(DeviceVector& output, const DeviceVector& input) const
+    void operator()(DeviceVector& output, DeviceVector& input) const
     {
+      // update ghost input values
+      scatter_fwd(input);
+
+      // assemble local cell contibutions
       thrust::fill(thrust::device, output.array().begin(), output.array().end(), T(0));
       assemble_elasticity_action<P>(output, input, phi_data, K, wdetJ, gpu_dofmap.map(), _cell_list, bc_marker, lambda_, mu_);
+
+      // accumulate ghost contributions to owning ranks
+      scatter_rev_add(output);
+
+      // apply Dirichlet boundary conditions
+      const std::size_t owned_size = output.bs() * output.index_map()->size_local();
+
+      constexpr int block_size = 256;
+      const std::size_t num_blocks = (owned_size + block_size - 1) / block_size;
+
+      detail::set_identity_rows<T><<<num_blocks, block_size>>>(
+          output.array().data().get(), input.array().data().get(), bc_marker.data().get(), owned_size);
     }
 
     // assemble the diagonal of the elasticity operator for this level
@@ -146,6 +162,8 @@ class ElasticityLevel{
     {
       thrust::fill(thrust::device, diagonal.array().begin(), diagonal.array().end(), T(0));
       assemble_elasticity_diagonal<P>(diagonal, phi_data, K, wdetJ, gpu_dofmap.map(), _cell_list, bc_marker, lambda_, mu_);
+
+      scatter_rev_add(diagonal);
     }
 
     // assemble the body force vector for this level
@@ -153,6 +171,8 @@ class ElasticityLevel{
     void assemble_body_force(DeviceVector& b, ForceEvaluator force) const
     {
       launch_body_force_kernel<P>(b, phi_data, wdetJ, dof_coordinates, gpu_dofmap.map(), _cell_list, bc_marker, force);
+
+      scatter_rev_add(b);
     }
 
     template <typename ExactSolution>

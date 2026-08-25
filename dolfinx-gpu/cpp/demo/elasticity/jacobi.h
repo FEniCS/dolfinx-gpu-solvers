@@ -8,6 +8,8 @@
 #include <thrust/inner_product.h>
 #include <thrust/transform.h>
 
+#include <dolfinx/common/MPI.h>
+
 #include "cg.h"
 
 
@@ -223,7 +225,7 @@ typename Vector::value_type estimate_lambda_max(
 template <typename Vector, typename Operator>
 typename Vector::value_type residual_norm(
   const Operator& A,
-  const Vector& x,
+  Vector& x,
   const Vector& b,
   Vector& Ax,
   Vector& residual)
@@ -243,13 +245,18 @@ typename Vector::value_type residual_norm(
   );
 
   // compute norm of residual
-  const Scalar norm_squared = thrust::inner_product(
+  const std::int32_t local_size = residual.bs() * residual.index_map()->size_local();
+
+  const Scalar local_norm_squared = thrust::inner_product(
     thrust::device,
     residual.array().begin(),
-    residual.array().end(),
+    residual.array().begin() + local_size,
     residual.array().begin(),
     Scalar(0)
   );
+
+  Scalar norm_squared;
+  MPI_Allreduce(&local_norm_squared, &norm_squared, 1, dolfinx::MPI::mpi_t<Scalar>, MPI_SUM, residual.index_map()->comm());
 
   return std::sqrt(norm_squared);
 };

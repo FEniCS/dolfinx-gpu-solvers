@@ -54,8 +54,8 @@ int main(int argc, char* argv[])
   int rank;
   MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 
-  const int device = select_gpu_for_rank(MPI_COMM_WORLD);
-  std::cout << "MPI rank " << rank << " using GPU " << device << "\n";
+  const GPUSelection gpu_selection = select_gpu_for_rank(MPI_COMM_WORLD);
+  std::cout << "MPI rank " << rank << " local rank " << gpu_selection.local_rank << " using GPU " << gpu_selection.device << "\n";
 
   po::options_description desc("Options");
   desc.add_options()("help,h", "Print usage message")(

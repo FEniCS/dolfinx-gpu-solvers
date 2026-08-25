@@ -3,6 +3,7 @@
 
 #include <dolfinx/common/IndexMap.h>
 #include <dolfinx/la/Vector.h>
+#include <dolfinx/common/MPI.h>
 
 #include <thrust/copy.h>
 #include <thrust/inner_product.h>
@@ -182,15 +183,26 @@ namespace elasticity
             int _max_iter = 1000;
             T _rtol = T(1e-8);
 
+            // number of owned entries on this MPI rank
+            static std::int32_t local_size(const Vector& x)
+            {
+                return x.bs() * x.index_map()->size_local();
+            }
+
             // compute the dot product of two vectors
             static T dot(const Vector& x, const Vector& y){
-                const auto& x_array = x.array();
-                const auto& y_array = y.array();
+                const std::int32_t size = x.bs() * x.index_map()->size_local();
 
-                if (x_array.size() != y_array.size())
+                if (size != y.bs() * y.index_map()->size_local())
                     throw std::runtime_error("Vectors must be the same size for dot product");
                 
-                return thrust::inner_product(thrust::device, x_array.begin(), x_array.end(), y_array.begin(), T(0));
+                const T local = thrust::inner_product(thrust::device, x.array().begin(), x.array().begin() + size, y.array().begin(), T(0));
+
+                T result;
+
+                MPI_Allreduce(&local, &result, 1, dolfinx::MPI::mpi_t<T>, MPI_SUM, x.index_map()->comm());
+
+                return result;
             }
 
             // copy the contents of source vector to destination vector
@@ -201,7 +213,8 @@ namespace elasticity
                 if (dest_array.size() != source_array.size())
                     throw std::runtime_error("Vectors must be the same size for copy");
                 
-                thrust::copy(thrust::device, source_array.begin(), source_array.end(), dest_array.begin());
+                const std::int32_t size = local_size(destination);
+                thrust::copy(thrust::device, source_array.begin(), source_array.begin() + size, dest_array.begin());
             }
 
             // compute the linear combination of two vectors i.e. result = alpha * x + y
@@ -214,7 +227,8 @@ namespace elasticity
                     throw std::runtime_error("Vectors must be the same size for axpy");
                 }
 
-                thrust::transform(thrust::device, x_values.begin(), x_values.end(), y_values.begin(), result_values.begin(), axpyOperation<T>{alpha});
+                const std::int32_t size = local_size(result);
+                thrust::transform(thrust::device, x_values.begin(), x_values.begin() + size, y_values.begin(), result_values.begin(), axpyOperation<T>{alpha});
             }
 
 

@@ -271,7 +271,7 @@ class PMultigridHierarchy<FineP, NextCoarserP, RemainingOrders...>{
     thrust::device_vector<T> interpolation; // interpolation matrix from level NextCoarserP to level FineP
 
     using DeviceIndexVector = thrust::device_vector<std::int32_t>;
-    using DeviceVector = dolfinx::la::Vector<T, thrust::device_vector<T>>;  
+    using DeviceVector = ElasticityLevel<FineP>::DeviceVector;  
 
     // information needed to perform transfers involving level P
     std::size_t num_fine_nodes = 0;
