@@ -53,28 +53,27 @@ namespace p_transfer
     // compute prolongation of cells from coarse to fine mesh
     template <typename T, int coarse_dofs, int fine_dofs>
 
-    __global__ void prolong_cells(
-        std::size_t num_cells,
+    __global__ void prolong_nodes(
+        std::size_t num_fine_nodes,
         const T* __restrict__ interpolation, // points to interpolation matrix from P coarse to P fine
         const std::int32_t* __restrict__ coarse_dofmap, 
-        const std::int32_t* __restrict__ fine_dofmap,
+        const std::int32_t* __restrict__ owner_cell,
+        const std::int32_t* __restrict__ owner_local,
         const T* __restrict__ coarse_values,
         T* __restrict__ fine_values)
     {
         // one flattened task for each thread
         // cell x local fine node x component
         const std::size_t task = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-        // compute the cell index from the task index
-        constexpr int value_per_cell = fine_dofs * 3; // number of values per cell
-        const std::size_t total_tasks = num_cells * value_per_cell; // total number of tasks
+        const std::size_t total_tasks = num_fine_nodes * 3; // total number of tasks
 
         if (task >= total_tasks) return; // check if the thread index is valid
 
-        // index mapping for multiple cells per blockS
-        const std::size_t cell = task / value_per_cell; // find which cell this task belongs to 
-        const int local_task = static_cast<int>(task % value_per_cell); // position of task within this cell
-        const int component = local_task % 3; // 3 consectutive tasks correspond to x, y, z
-        const int fine_i = local_task / 3; // which local fine basis function this task corresponds to
+        // index mapping for multiple cells per blocks
+        const std::size_t fine_node = task / 3; // position of task within this cell
+        const int component = task % 3; // 3 consectutive tasks correspond to x, y, z
+        const std::int32_t cell = owner_cell[fine_node]; // find which cell this task belongs to 
+        const std::int32_t fine_i = owner_local[fine_node]; // which local fine basis function this task corresponds to
 
         T value = T(0); // local accumulator essentially, adds contibutions from each coarse basis function to this variable
 
@@ -85,18 +84,8 @@ namespace p_transfer
             const T P_ij = interpolation[fine_i * coarse_dofs + coarse_j]; // read one interpolation matrix entry
             value += P_ij * coarse_values[coarse_dof]; // add coarse contribution to the fine value
         }
-        
-        const std::int32_t fine_node = fine_dofmap[cell * fine_dofs + fine_i]; // global fine node
-        const std::int32_t fine_dof = fine_node * 3 + component; // convert fine node into vector dof
-
-        #if defined(__HIP_PLATFORM_AMD__)
-            fine_values[fine_dof] = value; // write the computed fine value to the output vector
-            // at some point, fix HIP write race maybe with cell ownership?
-        #else
-            // atomic store used to remove write race condition
-            cuda::atomic_ref<T, cuda::thread_scope_system> ref(fine_values[fine_dof]);
-            ref.store(value, cuda::memory_order_relaxed); // write the computed fine value to the output vector
-        #endif
+      
+      fine_values[fine_node * 3 + component] = value; // write the fine value for this task
     }
 
 
@@ -341,25 +330,29 @@ class PMultigridHierarchy<FineP, NextCoarserP, RemainingOrders...>{
 
 
     // wrapper for the prolongation operator from level CoarseP to level FineP
-    void prolong(const DeviceVector& coarse_values, DeviceVector& fine_values) const
+    void prolong(DeviceVector& coarse_values, DeviceVector& fine_values) const
     {
-        constexpr int coarse_dofs = detail::elasticity_traits<NextCoarserP>::ndofs;
-        constexpr int fine_dofs = detail::elasticity_traits<FineP>::ndofs;
+      scatter_fwd(coarse_values); // scatter coarse values to ghost nodes before prolongation
 
-        const std::size_t num_cells = level.gpu_dofmap.extent(0); // number of cells in the mesh
-        const std::size_t total_tasks = num_cells * fine_dofs * 3; // number of tasks for each cell, local fine node, and component
+      constexpr int coarse_dofs = detail::elasticity_traits<NextCoarserP>::ndofs;
+      constexpr int fine_dofs = detail::elasticity_traits<FineP>::ndofs;
 
-        const int block_size = 256;
-        const int grid_size = static_cast<int>((total_tasks + block_size - 1) / block_size);
+      thrust::fill(thrust::device, fine_values.array().begin(), fine_values.array().end(), T(0));
 
-        p_transfer::prolong_cells<T, coarse_dofs, fine_dofs><<<grid_size, block_size>>>(
-            num_cells,
-            interpolation.data().get(),
-            coarser.level.gpu_dofmap.map().data().get(),
-            level.gpu_dofmap.map().data().get(),
-            coarse_values.array().data().get(),
-            fine_values.array().data().get()
-        );
+      const std::size_t total_tasks = num_fine_nodes * 3; // number of tasks for each fine node, local fine node, and component
+
+      const int block_size = 256;
+      const int grid_size = static_cast<int>((total_tasks + block_size - 1) / block_size);
+
+      p_transfer::prolong_nodes<T, coarse_dofs, fine_dofs><<<grid_size, block_size>>>(
+          num_fine_nodes,
+          interpolation.data().get(),
+          coarser.level.gpu_dofmap.map().data().get(),
+          owner_cell.data().get(),
+          owner_local.data().get(),
+          coarse_values.array().data().get(),
+          fine_values.array().data().get()
+      );
     }
 
     
@@ -385,6 +378,8 @@ class PMultigridHierarchy<FineP, NextCoarserP, RemainingOrders...>{
             fine_values.array().data().get(),
             coarse_values.array().data().get()
         );
+
+        scatter_rev_add(coarse_values); // add contributions from ghost nodes to owner nodes
     }
 
     void set_smoothing_steps(int order, int pre, int post)
@@ -451,8 +446,7 @@ class PMultigridHierarchy<FineP, NextCoarserP, RemainingOrders...>{
       {
         const auto fine_index_map = level.V->dofmap()->index_map;
 
-        num_fine_nodes = static_cast<std::size_t>(fine_index_map->size_local() 
-            + static_cast<std::size_t>(fine_index_map->num_ghosts()));
+        num_fine_nodes = static_cast<std::size_t>(fine_index_map->size_local());
 
         const auto fine_dofmap = level.V->dofmap()->map(); // flattened dofmap for level P
 
@@ -465,8 +459,13 @@ class PMultigridHierarchy<FineP, NextCoarserP, RemainingOrders...>{
           for (std::size_t fine_i = 0; fine_i < fine_dofmap.extent(1); ++fine_i)
           {
             const std::int32_t fine_node = fine_dofmap(cell, fine_i);
+
+            if (fine_node >= static_cast<std::int32_t>(num_fine_nodes))
+              continue; // skip if the fine node index is out of bounds
+
             // if this fine node has not yet been assigned an owner cell, assign it now
-            if (owner_cell_host[fine_node] == std::int32_t(-1)){
+            if (owner_cell_host[fine_node] == std::int32_t(-1))
+            {
                 owner_cell_host[fine_node] = static_cast<std::int32_t>(cell);
                 owner_local_host[fine_node] = static_cast<std::int32_t>(fine_i);
             }
@@ -504,7 +503,7 @@ class PMultigridHierarchy<FineP, NextCoarserP, RemainingOrders...>{
         else if constexpr (smoother_type == SmootherType::Chebyshev)
         {
           const T cheby_min = T(0.1) * lambda_max; // minimum eigenvalue for Chebyshev smoother
-          const T cheby_max = T(1.1) * lambda_max; // maximum eigenvalue for Chebyshev smoother
+          const T cheby_max = T(1.25) * lambda_max; // maximum eigenvalue for Chebyshev smoother
           chebyshev_smooth(level, solution, rhs, diagonal_inverse, fine_Ax, fine_residual, chebyshev_previous, chebyshev_next, num_steps, cheby_min, cheby_max);
         }
       }

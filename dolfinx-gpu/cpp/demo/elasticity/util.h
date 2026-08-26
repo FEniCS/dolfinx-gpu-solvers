@@ -187,6 +187,6 @@ void scatter_fwd(Vector& x){
 
 template <typename Vector>
 void scatter_rev_add(Vector& x){
-  x.scatter_rev_begin(device_unpack{}, device_get_ptr{});
+  x.scatter_rev_begin(device_pack{}, device_get_ptr{});
   x.scatter_rev_end(device_unpack_add{});
 }

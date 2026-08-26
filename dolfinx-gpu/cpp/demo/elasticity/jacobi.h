@@ -192,7 +192,15 @@ typename Vector::value_type estimate_lambda_max(
   thrust::copy(host.begin(), host.end(), v.array().begin());
 
   auto dot = [](const Vector& a, const Vector& b) {
-    return thrust::inner_product(thrust::device, a.array().begin(), a.array().end(), b.array().begin(), T(0));
+    const std::int32_t size = a.bs() * a.index_map()->size_local();
+
+    const T local = thrust::inner_product(thrust::device, a.array().begin(), a.array().begin() + size, b.array().begin(), T(0));
+
+    T global;
+
+    MPI_Allreduce(&local, &global, 1, dolfinx::MPI::mpi_t<T>, MPI_SUM, a.index_map()->comm());
+
+    return global;
   };
 
   T norm = std::sqrt(dot(v, v));
