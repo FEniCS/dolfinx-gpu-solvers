@@ -7,6 +7,7 @@
 #include <thrust/functional.h>
 #include <thrust/inner_product.h>
 #include <thrust/transform.h>
+#include <thrust/device_ptr.h>
 
 #include <dolfinx/common/MPI.h>
 
@@ -25,6 +26,48 @@ struct invert_jacobi_diagonal{
 };
 
 
+// compute the residual r = D^{-1} * (b - Ax)
+template <typename T>
+__global__ void preconditioned_residual_kernel(
+  std::size_t n,
+  const T* b,
+  const T* Ax,
+  const T* diagonal_inverse,
+  T* residual)
+{
+  const std::size_t i = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+
+  if (i < n)
+  {
+    residual[i] = diagonal_inverse[i] * (b[i] - Ax[i]);
+  }
+}
+
+
+// compute the preconditioned residual r = D^{-1} * (b - Ax)
+template <typename Vector>
+void compute_preconditioned_residual(
+  const Vector& b,
+  const Vector& Ax,
+  const Vector& diagonal_inverse,
+  Vector& residual)
+{
+  using T = typename Vector::value_type;
+  const std::size_t owned_size = b.index_map()->size_local() * b.bs();
+
+  const std::size_t block_size = 256;
+  const std::size_t num_blocks = static_cast<std::size_t>(owned_size + block_size - 1) / block_size;
+
+  preconditioned_residual_kernel<<<num_blocks, block_size>>>(
+    owned_size,
+    thrust::raw_pointer_cast(b.array().data()),
+    thrust::raw_pointer_cast(Ax.array().data()),
+    thrust::raw_pointer_cast(diagonal_inverse.array().data()),
+    thrust::raw_pointer_cast(residual.array().data())
+  );
+}
+
+
 // Jacobi smoother
 // one weighted jacobi step: x = x + omega * D^{-1} * (b - Ax)
 template <typename Vector, typename Operator>
@@ -39,35 +82,19 @@ void jacobi_smooth(
   typename Vector::value_type omega)
 {
   using Scalar = typename Vector::value_type;
+  const std::size_t owned_size = x.bs() * x.index_map()->size_local();
 
   for (int step = 0; step < num_steps; ++step){
     A(Ax, x); // compute Ax
 
     // compute residual = b - Ax
-    thrust::transform(
-      thrust::device,
-      b.array().begin(),
-      b.array().end(),
-      Ax.array().begin(),
-      residual.array().begin(),
-      thrust::minus<Scalar>()
-    );
-
-    // multiply residual by inverse diagonal
-    thrust::transform(
-      thrust::device,
-      residual.array().begin(),
-      residual.array().end(),
-      diagonal_inverse.array().begin(),
-      residual.array().begin(),
-      thrust::multiplies<Scalar>()
-    );
+    compute_preconditioned_residual(b, Ax, diagonal_inverse, residual);
 
     // add result to x with damping factor omega
     thrust::transform(
       thrust::device,
       residual.array().begin(),
-      residual.array().end(),
+      residual.array().begin() + owned_size,
       x.array().begin(),
       x.array().begin(),
       elasticity::axpyOperation<Scalar>{omega}
@@ -89,6 +116,52 @@ struct chebyshev_blend
 };
 
 
+template <typename T>
+__global__ void chebyshev_update_kernel(
+  std::size_t n,
+  const T* previous,
+  const T* current,
+  const T* residual,
+  T* next,
+  T omega,
+  T scale)
+{
+  const std::size_t i = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+
+  if (i < n)
+  {
+    next[i] = (T(1) - omega) * previous[i] + omega * current[i] + omega * scale * residual[i];
+  }
+}
+
+
+template <typename Vector>
+void chebyshev_update(
+  const Vector& residual,
+  const Vector& previous,
+  const Vector& current,
+  Vector& next,
+  typename Vector::value_type omega,
+  typename Vector::value_type scale)
+{
+  using T = typename Vector::value_type;
+  const std::size_t owned_size = residual.bs() * residual.index_map()->size_local();
+
+  const std::size_t block_size = 256;
+  const std::size_t num_blocks = static_cast<std::size_t>(owned_size + block_size - 1) / block_size;
+
+  chebyshev_update_kernel<<<num_blocks, block_size>>>(
+    owned_size,
+    thrust::raw_pointer_cast(previous.array().data()),
+    thrust::raw_pointer_cast(current.array().data()),
+    thrust::raw_pointer_cast(residual.array().data()),
+    thrust::raw_pointer_cast(next.array().data()),
+    omega,
+    scale
+  );
+}
+
+
 // Chebyshev smoother
 template <typename Vector, typename Operator>
 void chebyshev_smooth(
@@ -105,6 +178,7 @@ void chebyshev_smooth(
   typename Vector::value_type lambda_max)
 {
   using T = typename Vector::value_type;
+  const std::int32_t owned_size = x.index_map()->size_local() * x.bs();
 
   if (degree < 1)
     return;
@@ -119,18 +193,15 @@ void chebyshev_smooth(
   T c_current = mu;
 
   // save x_0
-  thrust::copy(thrust::device, x.array().begin(), x.array().end(), previous.array().begin());
+  thrust::copy(thrust::device, x.array().begin(), x.array().begin() + owned_size, previous.array().begin());
 
   // r = b - Ax
   A(Ax, x);
 
-  thrust::transform(thrust::device, b.array().begin(), b.array().end(), Ax.array().begin(), residual.array().begin(), thrust::minus<T>());
-
-  // z = D^{-1} * r
-  thrust::transform(thrust::device, residual.array().begin(), residual.array().end(), diagonal_inverse.array().begin(), next.array().begin(), thrust::multiplies<T>());
+  compute_preconditioned_residual(b, Ax, diagonal_inverse, next);
 
   // x_1 = x_0 + scale * z
-  thrust::transform(thrust::device, next.array().begin(), next.array().end(), previous.array().begin(), x.array().begin(), elasticity::axpyOperation<T>{scale});
+  thrust::transform(thrust::device, next.array().begin(), next.array().begin() + owned_size, previous.array().begin(), x.array().begin(), elasticity::axpyOperation<T>{scale});
 
   // remaining Chebyshev stages
   for (int k = 1; k < degree; ++k)
@@ -138,25 +209,18 @@ void chebyshev_smooth(
     // r = b - Ax_k
     A(Ax, x);
 
-    thrust::transform(thrust::device, b.array().begin(), b.array().end(), Ax.array().begin(), residual.array().begin(), thrust::minus<T>());
-
-    // z = D^{-1} * r
-    thrust::transform(thrust::device, residual.array().begin(), residual.array().end(), diagonal_inverse.array().begin(), residual.array().begin(), thrust::multiplies<T>());
+    compute_preconditioned_residual(b, Ax, diagonal_inverse, residual);
 
     const T c_next = T(2) * mu * c_current - c_previous;
     const T omega = omega_product * c_current / c_next;
 
-    // next = (1 - omega) * previous + omega * x
-    thrust::transform(thrust::device, previous.array().begin(), previous.array().end(), x.array().begin(), next.array().begin(), chebyshev_blend<T>{omega});
-
-    // next += omega * scale * z
-    thrust::transform(thrust::device, residual.array().begin(), residual.array().end(), next.array().begin(), next.array().begin(), elasticity::axpyOperation<T>{omega * scale});
+    chebyshev_update(residual, previous, x, next, omega, scale);
 
     // previous <- x
-    thrust::copy(thrust::device, x.array().begin(), x.array().end(), previous.array().begin());
+    thrust::copy(thrust::device, x.array().begin(), x.array().begin() + owned_size, previous.array().begin());
 
     // x <- next
-    thrust::copy(thrust::device, next.array().begin(), next.array().end(), x.array().begin());
+    thrust::copy(thrust::device, next.array().begin(), next.array().begin() + owned_size, x.array().begin());
 
     c_previous = c_current;
     c_current = c_next;
