@@ -178,18 +178,10 @@ typename Vector::value_type estimate_lambda_max(
 {
   using T = typename Vector::value_type;
 
-  // starting vector
-  std::vector<T> host(v.array().size());
+  auto indicies = thrust::make_counting_iterator<std::size_t>(0);
 
-  for (std::size_t i = 0; i < host.size(); ++i)
-  {
-    if (bc_marker[i])
-      host[i] = T(0);
-    else
-      host[i] = std::sin(T(i + 1));
-  }
-
-  thrust::copy(host.begin(), host.end(), v.array().begin());
+  thrust::transform(thrust::device, indicies, indicies + v.array().size(), bc_marker.begin(), v.array().begin(), 
+    [] __host__ __device__ (std::size_t i, std::int8_t marker) { return marker ? T(0) : std::sin(T(i+1)); });
 
   auto dot = [](const Vector& a, const Vector& b) {
     const std::int32_t size = a.bs() * a.index_map()->size_local();
