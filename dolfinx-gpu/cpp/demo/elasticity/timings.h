@@ -6,7 +6,7 @@
 #include <iostream>
 
 
-constexpr bool detailed_timings = true; // set to true to enable detailed timing breakdowns
+constexpr bool detailed_timings = false; // set to true to enable detailed timing breakdowns
 
 
 struct SetupTimings

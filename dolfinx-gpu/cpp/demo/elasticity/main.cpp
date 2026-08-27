@@ -78,11 +78,11 @@ int main(int argc, char* argv[])
     //     MPI_COMM_WORLD, {{{0.0, 0.0, 0.0}, {1.0, 1.0, 1.0}}}, {n, n, n},
     //     mesh::CellType::tetrahedron, part));
     
-    io::XDMFFile xdmf_file(MPI_COMM_WORLD, "/home/af854/dolfinx-gpu-solvers/dolfinx-gpu/Crescendo_NX20mm.xdmf", "r");
+    io::XDMFFile xdmf_file(MPI_COMM_WORLD, "/users/fathyarw/dolfinx-gpu-solvers/dolfinx-gpu/refined_CRESCENDO_ENGINE-sc03-v17-tet4_merged_geom_sk24_fnx.xdmf", "r");
     auto mesh = std::make_shared<mesh::Mesh<U>>(xdmf_file.read_mesh(
       fem::CoordinateElement<U>(mesh::CellType::tetrahedron, 1),
       mesh::GhostMode::none,
-      "mesh"));
+      "geometry"));
 
     // Create list of all cells
     std::vector<std::int32_t> cell_list_host(
@@ -162,7 +162,7 @@ int main(int argc, char* argv[])
 
     // outer cg solver
     elasticity::CGSolver<DeviceVector> cg_solver(fine_level.V->dofmap()->index_map, 3);
-    cg_solver.set_max_iterations(1000);
+    cg_solver.set_max_iterations(5000);
     cg_solver.set_tolerance(T(1e-8));
 
     auto pmg_preconditioner = [&hierarchy](DeviceVector& z, const DeviceVector& r)

@@ -652,8 +652,12 @@ class PMultigridHierarchy<LastCoarserP>{
       auto pattern = dolfinx::fem::create_sparsity_pattern(coarse_form);
       pattern.finalize();
 
-      coarse_A = dolfinx::la::petsc::create_matrix(level.V->mesh()->comm(), pattern, "aij");
-
+      #if defined(__HIP_PLATFORM_AMD__)
+        coarse_A = dolfinx::la::petsc::create_matrix(level.V->mesh()->comm(), pattern, "aijhipsparse");
+      #else
+        coarse_A = dolfinx::la::petsc::create_matrix(level.V->mesh()->comm(), pattern, "aijcusparse");
+      #endif
+      
       MatZeroEntries(coarse_A);
 
       // assemble FE matrix
@@ -682,8 +686,8 @@ class PMultigridHierarchy<LastCoarserP>{
 
       KSPSetOperators(coarse_solver, coarse_A, coarse_A); // matrix for coarse solve
       KSPSetOptionsPrefix(coarse_solver, "coarse_"); // set prefix for command line options
-      KSPSetType(coarse_solver, KSPPREONLY); // apply GAMG as a preconditioner to CG iteration
-      // KSPSetTolerances(coarse_solver, 1e-8, PETSC_DEFAULT, PETSC_DEFAULT, 100); // set tolerances for coarse solve
+      KSPSetType(coarse_solver, KSPCG); // apply GAMG as a preconditioner to CG iteration
+      KSPSetTolerances(coarse_solver, 1e-8, PETSC_DEFAULT, PETSC_DEFAULT, 3); // set tolerances for coarse solve
       KSPSetInitialGuessNonzero(coarse_solver, PETSC_FALSE);
       // KSPSetNormType(coarse_solver, KSP_NORM_UNPRECONDITIONED);
 
