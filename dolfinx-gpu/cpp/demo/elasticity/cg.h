@@ -15,8 +15,6 @@
 #include <memory>
 #include <stdexcept>
 #include <cmath>
-#include <iostream>
-#include <iomanip>
 
 #include "timings.h"
 
@@ -123,7 +121,7 @@ namespace elasticity
                         throw std::runtime_error("Matrix A is not positive definite");
                     }
 
-                    // compute alpha = (r^T * r) / (p^T * Ap)
+                    // compute alpha = (r^T * z) / (p^T * Ap)
                     const T alpha = rho / pAp;
 
                     time_gpu(solve_timings.cg_vector_ops, [&](){
@@ -138,12 +136,6 @@ namespace elasticity
                     time_gpu(solve_timings.cg_dots, [&](){
                         residual_squared = dot(*_r, *_r);
                     });
-
-                    std::cout
-                        << "Outer CG iteration " << k + 1
-                        << ", relative residual = "
-                        << std::sqrt(residual_squared / residual_squared0)
-                        << "\n";
 
                     ++k; // increment iteration counter
 
@@ -163,7 +155,7 @@ namespace elasticity
                         throw std::runtime_error("Preconditioner is not positive definite");
                     }
 
-                    // compute beta = (r_new^T * r_new) / (r^T * r)
+                    // compute beta = (r_new^T * z_new) / (r^T * z)
                     const T beta = rho_new / rho;
 
                     time_gpu(solve_timings.cg_vector_ops, [&](){

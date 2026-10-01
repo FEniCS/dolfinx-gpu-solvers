@@ -12,7 +12,6 @@
 #include <iomanip>
 #include <iostream>
 #include <memory>
-#include <numeric>
 #include <vector>
 
 #include <boost/program_options.hpp>
@@ -53,13 +52,11 @@ int main(int argc, char* argv[])
 
   int rank;
   MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-
-  const GPUSelection gpu_selection = select_gpu_for_rank(MPI_COMM_WORLD);
-  std::cout << "MPI rank " << rank << " local rank " << gpu_selection.local_rank << " using GPU " << gpu_selection.device << "\n";
+  select_gpu_for_rank(MPI_COMM_WORLD);
 
   po::options_description desc("Options");
   desc.add_options()("help,h", "Print usage message")(
-      "n", po::value<std::size_t>()->default_value(100), "Cube mesh size");
+      "n", po::value<std::size_t>()->default_value(50), "Cube mesh size");
 
   // Parse command line options
   po::variables_map vm;
@@ -72,17 +69,17 @@ int main(int argc, char* argv[])
   {
     std::int32_t n = vm["n"].as<std::size_t>();
     // std::cout << "n=" << n << "\n";
-    // auto part
-    //     = mesh::create_cell_partitioner(dolfinx::mesh::GhostMode::none, 2);
-    // auto mesh = std::make_shared<mesh::Mesh<U>>(mesh::create_box<U>(
-    //     MPI_COMM_WORLD, {{{0.0, 0.0, 0.0}, {1.0, 1.0, 1.0}}}, {n, n, n},
-    //     mesh::CellType::tetrahedron, part));
-    
-    io::XDMFFile xdmf_file(MPI_COMM_WORLD, "/users/fathyarw/dolfinx-gpu-solvers/dolfinx-gpu/refined_CRESCENDO_ENGINE-sc03-v17-tet4_merged_geom_sk24_fnx.xdmf", "r");
-    auto mesh = std::make_shared<mesh::Mesh<U>>(xdmf_file.read_mesh(
-      fem::CoordinateElement<U>(mesh::CellType::tetrahedron, 1),
-      mesh::GhostMode::none,
-      "geometry"));
+    auto part
+        = mesh::create_cell_partitioner(dolfinx::mesh::GhostMode::none, 2);
+    auto mesh = std::make_shared<mesh::Mesh<U>>(mesh::create_box<U>(
+        MPI_COMM_WORLD, {{{0.0, 0.0, 0.0}, {1.0, 1.0, 1.0}}}, {n, n, n},
+        mesh::CellType::tetrahedron, part));
+     
+    // io::XDMFFile xdmf_file(MPI_COMM_WORLD, "", "r");
+    // auto mesh = std::make_shared<mesh::Mesh<U>>(xdmf_file.read_mesh(
+    //   fem::CoordinateElement<U>(mesh::CellType::tetrahedron, 1),
+    //   mesh::GhostMode::none,
+    //   ""));
 
     // Create list of all cells
     std::vector<std::int32_t> cell_list_host(
@@ -100,8 +97,8 @@ int main(int argc, char* argv[])
       [](auto x){ // x is a table of coordinates
       std::vector<std::int8_t> marker(x.extent(1), false); // create a list called marker which has one entry for each point being checked
             
-      constexpr T xmin = T(2588.61044);
-      constexpr T tol = T(1e-2);
+      constexpr T xmin = T(0);
+      constexpr T tol = T(1e-8);
 
       // mark points on the left boundary (x=0) as true
       for (std::size_t p = 0; p < x.extent(1); ++p) // loop over all points
@@ -111,14 +108,12 @@ int main(int argc, char* argv[])
       return marker;
     });
 
-    std::cout << "Number of boundary facets: "<< boundary_facets.size() << '\n';
-
     constexpr T E = T(1.0e9);
     constexpr T nu = T(0.3);
     constexpr T mu = E / (T(2) * (T(1) + nu));
     constexpr T lambda = E * nu / ((T(1) + nu) * (T(1) - T(2) * nu));
 
-    solve_timings.reset();
+    setup_timings.reset();
     device_synchronize();
 
     const auto setup_start =std::chrono::high_resolution_clock::now();
@@ -131,9 +126,12 @@ int main(int argc, char* argv[])
 
     const double hierarchy_setup_time = std::chrono::duration<double>(setup_end - setup_start).count();
 
-    std::cout << "Hierarchy setup time: " << hierarchy_setup_time << " seconds\n";
-    setup_timings.print(hierarchy_setup_time);
+    if (rank == 0)
+    {
+        std::cout << "Hierarchy setup time: " << hierarchy_setup_time << " seconds\n";
+    }
 
+    setup_timings.print(hierarchy_setup_time);
 
     using DeviceVector = typename Hierarchy::DeviceVector;
 
@@ -146,9 +144,6 @@ int main(int argc, char* argv[])
 
     const auto index_map = fine_level.V->dofmap()->index_map;
     const int bs = fine_level.V->dofmap()->index_map_bs();
-
-    std::cout << "Number of P" << fine_level.order << " nodes = " << index_map->size_global() << "\n";
-    std::cout << "Number of P" << fine_level.order << " DOFs = " << bs * index_map->size_global() << "\n";
 
     DeviceVector b_device(fine_level.V->dofmap()->index_map, 3);
     fine_level.assemble_body_force(b_device, detail::ConstantBodyForce<T>{T(0), T(0), T(-1)}); // assemble body force vector with force in negative z direction
@@ -172,72 +167,47 @@ int main(int argc, char* argv[])
     };
 
 
-    // timing 
-    constexpr int runs = 1;
-
-    std::vector<double> times;
-    times.reserve(runs);
-
+    // timing
     T initial_residual_norm = T(0);
     T final_residual_norm = T(0);
-    T relative_residual_norm = T(0);
-    int cg_iterations = 0;
 
-    std::cout << std::setprecision(17);
-
-    for (int run = 0; run < runs; ++run)
-    {
-      // reset x to 0 for each run
-      thrust::fill(thrust::device, x_device.array().begin(), x_device.array().end(), T(0));
+    thrust::fill(thrust::device, x_device.array().begin(), x_device.array().end(), T(0));
       
-      device_synchronize();
+    initial_residual_norm = residual_norm(fine_level, x_device, b_device, fine_Ax, fine_residual);
 
-      initial_residual_norm = residual_norm(fine_level, x_device, b_device, fine_Ax, fine_residual);
+    solve_timings.reset();
 
-      const auto start_time = std::chrono::high_resolution_clock::now();
+    const auto start_time = std::chrono::high_resolution_clock::now();
+    device_synchronize();
 
-      cg_iterations = cg_solver.solve(fine_level, x_device, b_device, pmg_preconditioner);
-      
-      device_synchronize();
+    const int cg_iterations = cg_solver.solve(fine_level, x_device, b_device, pmg_preconditioner);
+    
+    device_synchronize();
+    const auto end_time = std::chrono::high_resolution_clock::now();
 
-      const auto end_time = std::chrono::high_resolution_clock::now();
-      times.push_back(std::chrono::duration<double>(end_time - start_time).count());
-    }
+    const double solve_time = std::chrono::duration<double>(end_time - start_time).count();
 
     final_residual_norm = residual_norm(fine_level, x_device, b_device, fine_Ax, fine_residual);
-    relative_residual_norm = final_residual_norm / initial_residual_norm;
+    const T relative_residual_norm = final_residual_norm / initial_residual_norm;
 
-    std::cout << "Number of iterations: " << cg_iterations << "\n";
+    if (rank == 0)
+    {
+      std::cout << "Number of iterations: " << cg_iterations << "\n";
+      std::cout << "Solve time: " << solve_time << " seconds\n";
+      std::cout << "Relative residual norm: " << relative_residual_norm << "\n";
+    }
 
-    const double average_time = std::accumulate(times.begin(), times.end(), 0.0) / times.size();
-    std::cout << "Average cg + multigrid solve time: " << average_time << " seconds\n";
-    solve_timings.print(average_time);
-    std::cout << "Initial residual norm: " << initial_residual_norm << "\n";
-    std::cout << "Final residual norm: " << final_residual_norm << "\n";
-    std::cout << "Relative residual norm: " << relative_residual_norm << "\n";
+    solve_timings.print(solve_time);
 
     auto x2 = std::make_shared<fem::Function<T>>(fine_level.V);
 
     thrust::copy(x_device.array().begin(), x_device.array().end(), x2->x()->array().begin());
 
-    std::cout << std::setprecision(17);
-
-    std::cout << "Computed x norm = "
-              << dolfinx::la::norm(*x2->x()) << "\n";
-
-    auto b = std::make_shared<fem::Function<T>>(fine_level.V);
-    
-    device_synchronize();
-
-    thrust::copy(b_device.array().begin(), b_device.array().end(), b->x()->array().begin());
-
-    std::cout << "b norm = " << dolfinx::la::norm(*b->x()) << "\n";
-
     ///// for visualisation in PARAVIEW /////
     #ifdef HAS_ADIOS2
       x2->name = "displacement";
       io::VTXWriter<U> writer(
-          MPI_COMM_WORLD, "engine.bp", {x2}, "bp4");
+          MPI_COMM_WORLD, "elasticity.bp", {x2}, "bp4");
       writer.write(0.0);
     #endif
 

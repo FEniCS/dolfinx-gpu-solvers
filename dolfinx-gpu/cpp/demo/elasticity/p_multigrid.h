@@ -161,9 +161,9 @@ namespace p_multigrid_detail
     }
 
     // rotation modes:
-    auto& x3 = basis[3].array(); // rotation about x-axis
+    auto& x3 = basis[3].array(); // rotation about z-axis
     auto& x4 = basis[4].array(); // rotation about y-axis
-    auto& x5 = basis[5].array(); // rotation about z-axis
+    auto& x5 = basis[5].array(); // rotation about x-axis
 
     const std::vector<double> x = V.tabulate_dof_coordinates(false);
     const std::int32_t* dofs = V.dofmap()->map().data_handle();
@@ -568,7 +568,7 @@ class PMultigridHierarchy<LastCoarserP>{
     template <typename Vector>
     void v_cycle(Vector& solution, const Vector& rhs)
     {
-      // solve the coarsest level problem directly using PETSc GAMG
+      // approximately solve the coarsest level problem using PETSc GAMG
 
       // Finish CUDA/HIP restriction before PETSc reads rhs
        device_synchronize();
@@ -682,25 +682,24 @@ class PMultigridHierarchy<LastCoarserP>{
     {
       // set up the GAMG solver
       MPI_Comm comm = level.V->mesh()->comm();
-      KSPCreate(comm, &coarse_solver);
+      PetscCallAbort(comm, KSPCreate(comm, &coarse_solver));
 
-      KSPSetOperators(coarse_solver, coarse_A, coarse_A); // matrix for coarse solve
-      KSPSetOptionsPrefix(coarse_solver, "coarse_"); // set prefix for command line options
-      KSPSetType(coarse_solver, KSPCG); // apply GAMG as a preconditioner to CG iteration
-      KSPSetTolerances(coarse_solver, 1e-8, PETSC_DEFAULT, PETSC_DEFAULT, 3); // set tolerances for coarse solve
-      KSPSetInitialGuessNonzero(coarse_solver, PETSC_FALSE);
-      // KSPSetNormType(coarse_solver, KSP_NORM_UNPRECONDITIONED);
+      PetscCallAbort(comm, KSPSetOperators(coarse_solver, coarse_A, coarse_A)); // matrix for coarse solve
+      PetscCallAbort(comm, KSPSetOptionsPrefix(coarse_solver, "coarse_")); // set prefix for command line options
+      PetscCallAbort(comm, KSPSetType(coarse_solver, KSPCG)); // apply GAMG as a preconditioner to CG iteration
+      PetscCallAbort(comm, KSPSetTolerances(coarse_solver, 1e-8, PETSC_DEFAULT, PETSC_DEFAULT, 3)); // set tolerances for coarse solve
+      PetscCallAbort(comm, KSPSetInitialGuessNonzero(coarse_solver, PETSC_FALSE));
 
       PC pc;
-      KSPGetPC(coarse_solver, &pc);
-      PCSetType(pc, PCGAMG);
-      PCGAMGSetCoarseEqLim(pc, 1000);
+      PetscCallAbort(comm, KSPGetPC(coarse_solver, &pc));
+      PetscCallAbort(comm, PCSetType(pc, PCGAMG));
+      PetscCallAbort(comm, PCGAMGSetCoarseEqLim(pc, 1000));
 
       PetscReal threshold = 0.0;
-      PCGAMGSetThreshold(pc, &threshold, 1);
+      PetscCallAbort(comm, PCGAMGSetThreshold(pc, &threshold, 1));
       
-      KSPSetFromOptions(coarse_solver); // apply any command line options
-      KSPSetUp(coarse_solver); // actually construct the AMG hierarchy 
+      PetscCallAbort(comm, KSPSetFromOptions(coarse_solver)); // apply any command line options
+      PetscCallAbort(comm, KSPSetUp(coarse_solver)); // actually construct the AMG hierarchy 
     }
 
 

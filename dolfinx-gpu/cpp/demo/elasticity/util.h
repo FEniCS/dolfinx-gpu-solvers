@@ -98,12 +98,6 @@ inline GPUSelection select_gpu_for_rank(MPI_Comm comm){
         pci_bus_id, sizeof(pci_bus_id), device));
   #endif
 
-  std::cout << "local rank " << local_rank
-            << ", num visible GPUs = " << num_devices
-            << ", device " << device
-            << ", PCI bus " << pci_bus_id
-            << "\n";
-
   MPI_Comm_free(&local_comm);
 
   return {local_rank, device};

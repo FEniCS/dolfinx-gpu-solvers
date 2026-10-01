@@ -33,19 +33,19 @@ struct SetupTimings
                       << " (" << 100.0 * time / total_setup_time << "%)\n";
         };
 
-        const double measured
-            = matrix_assembly
-            + nullspace_setup
-            + gamg_setup
-            + petsc_vector_setup
-            + build_owners
-            + assemble_diagonal
-            + lambda_max;
-        
-        const double other = total_setup_time - measured;
-
         if constexpr (detailed_timings)
         {
+          const double measured
+              = matrix_assembly
+              + nullspace_setup
+              + gamg_setup
+              + petsc_vector_setup
+              + build_owners
+              + assemble_diagonal
+              + lambda_max;
+          
+          const double other = total_setup_time - measured;
+
           std::cout << "\n=== Setup timing breakdown ===\n";
 
           print_one("P1 matrix assembly", matrix_assembly);
@@ -55,6 +55,7 @@ struct SetupTimings
           print_one("Build fine node owners", build_owners);
           print_one("Assemble diagonal", assemble_diagonal);
           print_one("Compute lambda_max", lambda_max);
+          print_one("Other", other);
         }
     }
 };
@@ -79,28 +80,28 @@ struct SolveTimings
 
   void print(double total_solve_time) const
   {
-    const double measured
-        = outer_matvec
-        + cg_dots
-        + cg_vector_ops
-        + pre_smooth
-        + vcycle_residual
-        + restriction
-        + coarse_solve
-        + prolongation_correction
-        + post_smooth;
-
-    const double other = total_solve_time - measured;
-
-    auto print_one = [total_solve_time](const char* name, double time)
-    {
-      std::cout << name
-                << ": " << time << " s"
-                << " (" << 100.0 * time / total_solve_time << "%)\n";
-    };
-
     if constexpr (detailed_timings)
     {
+      const double measured
+          = outer_matvec
+          + cg_dots
+          + cg_vector_ops
+          + pre_smooth
+          + vcycle_residual
+          + restriction
+          + coarse_solve
+          + prolongation_correction
+          + post_smooth;
+
+      const double other = total_solve_time - measured;
+
+      auto print_one = [total_solve_time](const char* name, double time)
+      {
+        std::cout << name
+                  << ": " << time << " s"
+                  << " (" << 100.0 * time / total_solve_time << "%)\n";
+      };
+
       std::cout << "\n=== Solve timing breakdown ===\n";
 
       print_one("Outer CG matvec", outer_matvec);

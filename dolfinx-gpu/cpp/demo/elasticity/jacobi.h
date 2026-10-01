@@ -103,19 +103,6 @@ void jacobi_smooth(
 };
 
 
-template <typename Scalar>
-struct chebyshev_blend
-{
-  Scalar omega;
-
-  __host__ __device__ 
-  Scalar operator()(Scalar previous, Scalar current) const
-  {
-    return (Scalar(1) - omega) * previous + omega * current;
-  }
-};
-
-
 template <typename T>
 __global__ void chebyshev_update_kernel(
   std::size_t n,

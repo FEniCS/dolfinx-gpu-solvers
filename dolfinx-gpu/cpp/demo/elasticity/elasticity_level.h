@@ -174,12 +174,7 @@ class ElasticityLevel{
 
       scatter_rev_add(b);
     }
-
-    template <typename ExactSolution>
-    T compute_l2_error_squared(const DeviceVector& solution, ExactSolution exact_solution) const
-    {
-      return launch_l2_error_squared_kernel<P>(solution, phi_data, wdetJ, dof_coordinates, gpu_dofmap.map(), _cell_list, exact_solution);
-    }
+    
   
   private:
     void build_geometry(){
@@ -220,8 +215,6 @@ class ElasticityLevel{
         *V->dofmap(), 
         fdim, 
         std::span<const std::int32_t>(boundary_facets.data(), boundary_facets.size()));
-
-      std::cout << "Number of Dirichlet boundary nodes: " << bc_nodes.size() << std::endl;
 
       // create a temporary function to obtain the scalar vector size
       auto size_function = std::make_shared<dolfinx::fem::Function<T>>(V);
