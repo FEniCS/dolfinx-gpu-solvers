@@ -1,17 +1,17 @@
-// Copyright(C) 2023-2025 Igor A. Baratta, Chris N. Richardson, Joseph P. Dean,
-// Garth N. Wells
+// Copyright(C) 2023-2026 Igor A. Baratta, Chris N. Richardson, Joseph P. Dean,
+// Garth N. Wells, Arwa Fathy
 // SPDX-License-Identifier:    MIT
 
 #pragma once
 
 #include <cstdio>
+#include <mpi.h>
 #include <sstream>
 #include <string>
-#include <mpi.h>
 
 #include <thrust/gather.h>
-#include <thrust/scatter.h>
 #include <thrust/memory.h>
+#include <thrust/scatter.h>
 
 #if defined(__HIP__)
 #include <hip/hip_runtime.h>
@@ -57,73 +57,67 @@ inline void check_device_last_error() { err_check(cudaGetLastError()); }
 inline void device_synchronize() { err_check(cudaDeviceSynchronize()); }
 #endif
 
-
 struct GPUSelection
 {
   int local_rank;
   int device;
 };
 
-inline GPUSelection select_gpu_for_rank(MPI_Comm comm){
+inline GPUSelection select_gpu_for_rank(MPI_Comm comm)
+{
   MPI_Comm local_comm;
-  MPI_Comm_split_type(
-      comm,
-      MPI_COMM_TYPE_SHARED,
-      0,
-      MPI_INFO_NULL,
-      &local_comm);
+  MPI_Comm_split_type(comm, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL,
+                      &local_comm);
 
   int local_rank;
   MPI_Comm_rank(local_comm, &local_rank);
 
   int num_devices = 0;
 
-  #if defined(__HIP__)
-    err_check(hipGetDeviceCount(&num_devices));
+#if defined(__HIP__)
+  err_check(hipGetDeviceCount(&num_devices));
 
-    const int device = local_rank % num_devices;
-    err_check(hipSetDevice(device));
+  const int device = local_rank % num_devices;
+  err_check(hipSetDevice(device));
 
-    char pci_bus_id[32];
-    err_check(hipDeviceGetPCIBusId(
-        pci_bus_id, sizeof(pci_bus_id), device));
-  #else
-    err_check(cudaGetDeviceCount(&num_devices));
+  char pci_bus_id[32];
+  err_check(hipDeviceGetPCIBusId(pci_bus_id, sizeof(pci_bus_id), device));
+#else
+  err_check(cudaGetDeviceCount(&num_devices));
 
-    const int device = local_rank % num_devices;
-    err_check(cudaSetDevice(device));
+  const int device = local_rank % num_devices;
+  err_check(cudaSetDevice(device));
 
-    char pci_bus_id[32];
-    err_check(cudaDeviceGetPCIBusId(
-        pci_bus_id, sizeof(pci_bus_id), device));
-  #endif
+  char pci_bus_id[32];
+  err_check(cudaDeviceGetPCIBusId(pci_bus_id, sizeof(pci_bus_id), device));
+#endif
 
   MPI_Comm_free(&local_comm);
 
   return {local_rank, device};
 }
 
-
 struct device_pack
 {
   template <typename IndexIt, typename InputIt, typename OutputIt>
-  void operator()(IndexIt idx_first, IndexIt idx_last, InputIt in_first, OutputIt out_first)
+  void operator()(IndexIt idx_first, IndexIt idx_last, InputIt in_first,
+                  OutputIt out_first)
   {
     thrust::gather(thrust::device, idx_first, idx_last, in_first, out_first);
   }
 };
 
-
 struct device_unpack
 {
   template <typename IndexIt, typename InputIt, typename OutputIt>
-  void operator()(IndexIt idx_first, IndexIt idx_last, InputIt in_first, OutputIt out_first)
+  void operator()(IndexIt idx_first, IndexIt idx_last, InputIt in_first,
+                  OutputIt out_first)
   {
     const std::size_t n = idx_last - idx_first;
-    thrust::scatter(thrust::device, in_first, in_first + n, idx_first, out_first);
+    thrust::scatter(thrust::device, in_first, in_first + n, idx_first,
+                    out_first);
   }
 };
-
 
 struct device_get_ptr
 {
@@ -134,15 +128,12 @@ struct device_get_ptr
   }
 };
 
-
 template <typename T>
-__global__ void scatter_add_kernel(
-  T* output,
-  const T* input,
-  const std::int32_t* indices,
-  std::size_t n)
+__global__ void scatter_add_kernel(T* output, const T* input,
+                                   const std::int32_t* indices, std::size_t n)
 {
-  const std::size_t i = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const std::size_t i
+      = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
 
   if (i < n)
   {
@@ -151,14 +142,16 @@ __global__ void scatter_add_kernel(
   }
 };
 
-
-struct device_unpack_add{
+struct device_unpack_add
+{
   template <typename IndexIt, typename InputIt, typename OutputIt>
-  void operator()(IndexIt idx_first, IndexIt idx_last, InputIt in_first, OutputIt out_first) const
+  void operator()(IndexIt idx_first, IndexIt idx_last, InputIt in_first,
+                  OutputIt out_first) const
   {
     const std::size_t n = idx_last - idx_first;
 
-    if (n == 0) return;
+    if (n == 0)
+      return;
 
     const auto* indicies = thrust::raw_pointer_cast(&*idx_first);
     const auto* input = thrust::raw_pointer_cast(&*in_first);
@@ -171,16 +164,16 @@ struct device_unpack_add{
   }
 };
 
-
 template <typename Vector>
-void scatter_fwd(Vector& x){
+void scatter_fwd(Vector& x)
+{
   x.scatter_fwd_begin(device_pack{}, device_get_ptr{});
   x.scatter_fwd_end(device_unpack{});
 }
 
-
 template <typename Vector>
-void scatter_rev_add(Vector& x){
+void scatter_rev_add(Vector& x)
+{
   x.scatter_rev_begin(device_pack{}, device_get_ptr{});
   x.scatter_rev_end(device_unpack_add{});
 }

@@ -1,3 +1,10 @@
+// Copyright (C) 2026 Arwa Fathy
+//
+// This file is part of DOLFINx (https://www.fenicsproject.org)
+//
+// SPDX-License-Identifier:    MIT
+//
+
 #pragma once
 
 #include "util.h"
@@ -5,61 +12,50 @@
 #include <chrono>
 #include <iostream>
 
-
-constexpr bool detailed_timings = false; // set to true to enable detailed timing breakdowns
-
+// set to true to enable detailed timing breakdowns
+constexpr bool detailed_timings = false;
 
 struct SetupTimings
 {
-    double matrix_assembly = 0.0;
-    double nullspace_setup = 0.0;
-    double gamg_setup = 0.0;
-    double petsc_vector_setup = 0.0;
-    double build_owners = 0.0;
-    double assemble_diagonal = 0.0;
-    double lambda_max = 0.0;
+  double matrix_assembly = 0.0;
+  double nullspace_setup = 0.0;
+  double gamg_setup = 0.0;
+  double petsc_vector_setup = 0.0;
+  double build_owners = 0.0;
+  double assemble_diagonal = 0.0;
+  double lambda_max = 0.0;
 
-    void reset()
+  void reset() { *this = {}; }
+
+  void print(double total_setup_time) const
+  {
+    auto print_one = [total_setup_time](const char* name, double time)
     {
-        *this = {};
-    }
+      std::cout << name << ": " << time << " s"
+                << " (" << 100.0 * time / total_setup_time << "%)\n";
+    };
 
-    void print(double total_setup_time) const
+    if constexpr (detailed_timings)
     {
-        auto print_one = [total_setup_time](const char* name, double time)
-        {
-            std::cout << name
-                      << ": " << time << " s"
-                      << " (" << 100.0 * time / total_setup_time << "%)\n";
-        };
+      const double measured = matrix_assembly + nullspace_setup + gamg_setup
+                              + petsc_vector_setup + build_owners
+                              + assemble_diagonal + lambda_max;
 
-        if constexpr (detailed_timings)
-        {
-          const double measured
-              = matrix_assembly
-              + nullspace_setup
-              + gamg_setup
-              + petsc_vector_setup
-              + build_owners
-              + assemble_diagonal
-              + lambda_max;
-          
-          const double other = total_setup_time - measured;
+      const double other = total_setup_time - measured;
 
-          std::cout << "\n=== Setup timing breakdown ===\n";
+      std::cout << "\n=== Setup timing breakdown ===\n";
 
-          print_one("P1 matrix assembly", matrix_assembly);
-          print_one("P1 nullspace setup", nullspace_setup);
-          print_one("P1 GAMG setup", gamg_setup);
-          print_one("P1 PETSc vector setup", petsc_vector_setup);
-          print_one("Build fine node owners", build_owners);
-          print_one("Assemble diagonal", assemble_diagonal);
-          print_one("Compute lambda_max", lambda_max);
-          print_one("Other", other);
-        }
+      print_one("P1 matrix assembly", matrix_assembly);
+      print_one("P1 nullspace setup", nullspace_setup);
+      print_one("P1 GAMG setup", gamg_setup);
+      print_one("P1 PETSc vector setup", petsc_vector_setup);
+      print_one("Build fine node owners", build_owners);
+      print_one("Assemble diagonal", assemble_diagonal);
+      print_one("Compute lambda_max", lambda_max);
+      print_one("Other", other);
     }
+  }
 };
-
 
 struct SolveTimings
 {
@@ -73,32 +69,22 @@ struct SolveTimings
   double prolongation_correction = 0.0;
   double post_smooth = 0.0;
 
-  void reset()
-  {
-    *this = {};
-  }
+  void reset() { *this = {}; }
 
   void print(double total_solve_time) const
   {
     if constexpr (detailed_timings)
     {
-      const double measured
-          = outer_matvec
-          + cg_dots
-          + cg_vector_ops
-          + pre_smooth
-          + vcycle_residual
-          + restriction
-          + coarse_solve
-          + prolongation_correction
-          + post_smooth;
+      const double measured = outer_matvec + cg_dots + cg_vector_ops
+                              + pre_smooth + vcycle_residual + restriction
+                              + coarse_solve + prolongation_correction
+                              + post_smooth;
 
       const double other = total_solve_time - measured;
 
       auto print_one = [total_solve_time](const char* name, double time)
       {
-        std::cout << name
-                  << ": " << time << " s"
+        std::cout << name << ": " << time << " s"
                   << " (" << 100.0 * time / total_solve_time << "%)\n";
       };
 

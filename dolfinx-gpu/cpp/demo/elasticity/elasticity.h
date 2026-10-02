@@ -1,4 +1,4 @@
-// Copyright (C) 2026 Chris Richardson
+// Copyright (C) 2026 Chris Richardson, Arwa Fathy
 //
 // This file is part of DOLFINx (https://www.fenicsproject.org)
 //
@@ -46,16 +46,12 @@ namespace detail
 
 template <typename T, int nq, int ndofs, int cells_per_block>
 
-__global__ void elasticity_action(T* __restrict__ b, const T* __restrict__ u,
-                                  const T* __restrict__ phi_data,
-                                  const T* __restrict__ K_entity,
-                                  const T* __restrict__ wdetJ_entity,
-                                  const std::int32_t* __restrict__ cell_dofs,
-                                  const std::int32_t* __restrict__ cells,
-                                  int ncells,
-                                  const std::int8_t* __restrict__ bc_marker,
-                                  T lambda, 
-                                  T mu)
+__global__ void elasticity_action(
+    T* __restrict__ b, const T* __restrict__ u, const T* __restrict__ phi_data,
+    const T* __restrict__ K_entity, const T* __restrict__ wdetJ_entity,
+    const std::int32_t* __restrict__ cell_dofs,
+    const std::int32_t* __restrict__ cells, int ncells,
+    const std::int8_t* __restrict__ bc_marker, T lambda, T mu)
 {
   const int tx = threadIdx.x; // 0..cells_per_block-1 (cell within block)
   const int tz = threadIdx.z; // 0..ndofs-1           (node index)
@@ -67,15 +63,26 @@ __global__ void elasticity_action(T* __restrict__ b, const T* __restrict__ u,
   // global/shared memory access is guarded by `active`.
   const int cell_idx = blockIdx.x * cells_per_block + tx;
   const bool active = cell_idx < ncells;
-  const std::size_t cell_id = active ? static_cast<std::size_t>(cells[cell_idx]) : 0;
+
+  const std::size_t cell_id
+      = active ? static_cast<std::size_t>(cells[cell_idx]) : 0;
 
   // Shared memory: one scratch and wF slot per cell in the block
-  __shared__ T scratch[3 * ndofs][cells_per_block]; // interleaved: [node*3 + component]
-  __shared__ T wF[nq][3][3][cells_per_block]; // weighted flux tensor
-  __shared__ std::int32_t nodes[ndofs][cells_per_block]; // node indices for each cell
+
+  // interleaved: [node*3 + component]
+  __shared__ T scratch[3 * ndofs][cells_per_block];
+
+  // weighted flux tensor
+  __shared__ T wF[nq][3][3][cells_per_block];
+
+  // node indices for each cell
+  __shared__ std::int32_t nodes[ndofs][cells_per_block];
 
   // --- Load dofs (all threads) ---
-  if (active and ty ==0 and tz < ndofs) // global node number the same for all components so only one component loads the node indices
+
+  // global node number the same for all components so only one component loads
+  // the node indices
+  if (active and ty == 0 and tz < ndofs)
   {
     nodes[tz][tx] = cell_dofs[cell_id * ndofs + tz];
   }
@@ -84,15 +91,17 @@ __global__ void elasticity_action(T* __restrict__ b, const T* __restrict__ u,
   if (active and tz < ndofs)
   {
     const std::int32_t node = nodes[tz][tx]; // global node number
-    const std::int32_t dof = node* 3 + ty; // global dof number
+    const std::int32_t dof = node * 3 + ty;  // global dof number
 
     if (bc_marker[dof]) // check if node is clamped
     {
-      scratch[tz * 3 + ty][tx] = T(0); // set the value to zero if it is clamped
+      // set the value to zero if it is clamped
+      scratch[tz * 3 + ty][tx] = T(0);
     }
     else
     {
-      scratch[tz * 3 + ty][tx] = u[dof]; // otherwise, load the value from the input vector
+      // otherwise, load the value from the input vector
+      scratch[tz * 3 + ty][tx] = u[dof];
     }
   }
 
@@ -195,152 +204,210 @@ __global__ void elasticity_action(T* __restrict__ b, const T* __restrict__ u,
                  + wF[q][ty][2][tx] * dphi_zeta;
     }
     const std::int32_t node = nodes[tz][tx]; // global node number
-    const std::int32_t dof = node * 3 + ty; // global dof number
+    const std::int32_t dof = node * 3 + ty;  // global dof number
 
-    if (!bc_marker[dof]) // only add to output if node is not clamped
+    // only add to output if node is not clamped
+    if (!bc_marker[dof])
     {
-      atomicAdd(&b[dof], contrib); // add cell contribution to global output vector
+      // add cell contribution to global output vector
+      atomicAdd(&b[dof], contrib);
     }
   }
 }
 
 // diagonal needed for Jacobi preconditioner
 template <typename T, int nq, int ndofs, int cells_per_block>
-__global__ void elasticity_diagonal(
-  T* __restrict__ diagonal, // output diagonal vector
-  const T* __restrict__ phi_data,
-  const T* __restrict__ K_entity,
-  const T* __restrict__ wdetJ_entity,
-  const std::int32_t* __restrict__ cell_dofs,
-  const std::int32_t* __restrict__ cells,
-  int ncells,
-  const std::int8_t* __restrict__ bc_marker,
-  T lambda, 
-  T mu){
-    const int tx = threadIdx.x; // cell within block
-    const int ty = threadIdx.y; // displacement component (0,1,2)
-    const int tz = threadIdx.z; // local scalar basis function
+__global__ void
+elasticity_diagonal(T* __restrict__ diagonal, // output diagonal vector
+                    const T* __restrict__ phi_data,
+                    const T* __restrict__ K_entity,
+                    const T* __restrict__ wdetJ_entity,
+                    const std::int32_t* __restrict__ cell_dofs,
+                    const std::int32_t* __restrict__ cells, int ncells,
+                    const std::int8_t* __restrict__ bc_marker, T lambda, T mu)
+{
+  const int tx = threadIdx.x; // cell within block
+  const int ty = threadIdx.y; // displacement component (0,1,2)
+  const int tz = threadIdx.z; // local scalar basis function
 
-    const int cell_idx = blockIdx.x * cells_per_block + tx;
+  const int cell_idx = blockIdx.x * cells_per_block + tx;
 
-    if (cell_idx >= ncells) return;
+  if (cell_idx >= ncells)
+    return;
 
-    const std::size_t cell_id = static_cast<std::size_t>(cells[cell_idx]);
-    const std::int32_t node = cell_dofs[cell_id * ndofs + tz]; // global node number
-    const std::int32_t dof = node * 3 + ty; // global scalar dof
+  const std::size_t cell_id = static_cast<std::size_t>(cells[cell_idx]);
+  const std::int32_t node
+      = cell_dofs[cell_id * ndofs + tz];  // global node number
+  const std::int32_t dof = node * 3 + ty; // global scalar dof
 
-    if (bc_marker[dof]) return; // skip clamped dofs, they're handled separately
+  if (bc_marker[dof])
+    return; // skip clamped dofs, they're handled separately
 
-    // reference basis derivatives
-    const T* dphi_dxi = phi_data + nq * ndofs;
-    const T* dphi_deta = dphi_dxi + nq * ndofs;
-    const T* dphi_dzeta = dphi_deta + nq * ndofs;
+  // reference basis derivatives
+  const T* dphi_dxi = phi_data + nq * ndofs;
+  const T* dphi_deta = dphi_dxi + nq * ndofs;
+  const T* dphi_dzeta = dphi_deta + nq * ndofs;
 
-    // geometry for this cell
-    const T* K = K_entity + cell_id * 9 * nq;
-    const T* wdetJ = wdetJ_entity + cell_id * nq;
+  // geometry for this cell
+  const T* K = K_entity + cell_id * 9 * nq;
+  const T* wdetJ = wdetJ_entity + cell_id * nq;
 
-    T cell_diagonal = T(0); // local diagonal contribution for this dof
+  // local diagonal contribution for this dof
+  T cell_diagonal = T(0);
 
-    for (int q = 0; q < nq; ++q){
-      // read reference basis derivatives for this quadrature point and dof
-      const T dxi = dphi_dxi[q * ndofs + tz];
-      const T deta = dphi_deta[q * ndofs + tz];
-      const T dzeta = dphi_dzeta[q * ndofs + tz];
+  for (int q = 0; q < nq; ++q)
+  {
+    // read reference basis derivatives for this quadrature point and dof
+    const T dxi = dphi_dxi[q * ndofs + tz];
+    const T deta = dphi_deta[q * ndofs + tz];
+    const T dzeta = dphi_dzeta[q * ndofs + tz];
 
-      // transform reference derivatives to physical derivatives using K = J^{-T}
-      const T gx = K[0 * nq + q] * dxi + K[1 * nq + q] * deta + K[2 * nq + q] * dzeta;
-      const T gy = K[3 * nq + q] * dxi + K[4 * nq + q] * deta + K[5 * nq + q] * dzeta;
-      const T gz = K[6 * nq + q] * dxi + K[7 * nq + q] * deta + K[8 * nq + q] * dzeta;
+    // transform reference derivatives to physical derivatives using K = J^{-T}
+    const T gx
+        = K[0 * nq + q] * dxi + K[1 * nq + q] * deta + K[2 * nq + q] * dzeta;
+    const T gy
+        = K[3 * nq + q] * dxi + K[4 * nq + q] * deta + K[5 * nq + q] * dzeta;
+    const T gz
+        = K[6 * nq + q] * dxi + K[7 * nq + q] * deta + K[8 * nq + q] * dzeta;
 
-      // form diagonal contribution
-      const T gradient_squared = gx * gx + gy * gy + gz * gz;
+    // form diagonal contribution
+    const T gradient_squared = gx * gx + gy * gy + gz * gz;
 
-      T component_gradient; // variable to hold derivative of the component corresponding to this thread
+    // variable to hold derivative of the component corresponding to this thread
+    T component_gradient;
 
-      if (ty == 0) component_gradient = gx;
-      else if (ty == 1) component_gradient = gy;
-      else component_gradient = gz;
+    if (ty == 0)
+      component_gradient = gx;
+    else if (ty == 1)
+      component_gradient = gy;
+    else
+      component_gradient = gz;
 
-      cell_diagonal += wdetJ[q] * (mu * gradient_squared + (lambda + mu) * component_gradient * component_gradient);
-    }
-
-    atomicAdd(&diagonal[dof], cell_diagonal);
+    cell_diagonal
+        += wdetJ[q]
+           * (mu * gradient_squared
+              + (lambda + mu) * component_gradient * component_gradient);
   }
 
+  atomicAdd(&diagonal[dof], cell_diagonal);
+}
 
-  template <int P>
-  struct elasticity_traits;
+template <int P>
+struct elasticity_traits;
 
-  template <>
-  struct elasticity_traits<1>{
-    static constexpr int ndofs = 4; // number of scalar dofs per cell
-    static constexpr int quadrature_degree = 1; // quadrature degree for P1 tetrahedra
-    static constexpr int nq = 1;     // number of quadrature points per cell
-    #if defined(__HIP_PLATFORM_AMD__)
-      static constexpr int cells_per_block = 16;
-    #else
-      static constexpr int cells_per_block = 32; // number of cells per CUDA block
-      #endif
-  };
+template <>
+struct elasticity_traits<1>
+{
+  // number of scalar dofs per cell
+  static constexpr int ndofs = 4;
 
-  template <>
-  struct elasticity_traits<2>{
-    static constexpr int ndofs = 10; // number of scalar dofs per cell
-    static constexpr int quadrature_degree = 2; // quadrature degree for P2 tetrahedra
-    static constexpr int nq = 4;     // number of quadrature points per cell
-    #if defined(__HIP_PLATFORM_AMD__)
-      static constexpr int cells_per_block = 16;
-    #else
-      static constexpr int cells_per_block = 32; // number of cells per CUDA block
-      #endif
-  };
+  // quadrature degree for P1 tetrahedra
+  static constexpr int quadrature_degree = 1;
 
-  template <>
-  struct elasticity_traits<3>{
-    static constexpr int ndofs = 20; // number of scalar dofs per cell
-    static constexpr int quadrature_degree = 4; // quadrature degree for P3 tetrahedra
-    static constexpr int nq = 14;     // number of quadrature points per cell
-    #if defined(__HIP_PLATFORM_AMD__)
-      static constexpr int cells_per_block = 8;
-    #else
-      static constexpr int cells_per_block = 16; // number of cells per CUDA block
-    #endif
-  };
+  // number of quadrature points per cell
+  static constexpr int nq = 1;
 
-  template <>
-  struct elasticity_traits<4>{
-    static constexpr int ndofs = 35; // number of scalar dofs per cell
-    static constexpr int quadrature_degree = 6; // quadrature degree for P4 tetrahedra
-    static constexpr int nq = 24;     // number of quadrature points per cell
-    #if defined(__HIP_PLATFORM_AMD__)
-      static constexpr int cells_per_block = 4;
-    #else
-      static constexpr int cells_per_block = 8; // number of cells per CUDA block
-    #endif
-  };
+#if defined(__HIP_PLATFORM_AMD__)
+  static constexpr int cells_per_block = 16;
+#else
+  // number of cells per CUDA block
+  static constexpr int cells_per_block = 32;
+#endif
+};
 
-  template <>
-  struct elasticity_traits<5>{
-    static constexpr int ndofs = 56; // number of scalar dofs per cell
-    static constexpr int quadrature_degree = 12; // quadrature degree for P5 tetrahedra
-    static constexpr int nq = 122;     // number of quadrature points per cell
-    #if defined(__HIP_PLATFORM_AMD__)
-      static constexpr int cells_per_block = 2;
-    #else
-      static constexpr int cells_per_block = 4; // number of cells per CUDA block
-    #endif
-  };
+template <>
+struct elasticity_traits<2>
+{
+  // number of scalar dofs per cell
+  static constexpr int ndofs = 10;
 
-  template <typename T>
-  __global__ void set_identity_rows(T* output, const T* input, const std::int8_t* bc_marker, std::size_t size){
-    const std::size_t i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < size and bc_marker[i]){
-      output[i] = input[i]; // set the value to the input if it is clamped
-    }
+  // quadrature degree for P2 tetrahedra
+  static constexpr int quadrature_degree = 2;
+
+  // number of quadrature points per cell
+  static constexpr int nq = 4;
+
+#if defined(__HIP_PLATFORM_AMD__)
+  static constexpr int cells_per_block = 16;
+#else
+  // number of cells per CUDA block
+  static constexpr int cells_per_block = 32;
+#endif
+};
+
+template <>
+struct elasticity_traits<3>
+{
+  // number of scalar dofs per cell
+  static constexpr int ndofs = 20;
+
+  // quadrature degree for P3 tetrahedra
+  static constexpr int quadrature_degree = 4;
+
+  // number of quadrature points per cell
+  static constexpr int nq = 14;
+
+#if defined(__HIP_PLATFORM_AMD__)
+  static constexpr int cells_per_block = 8;
+#else
+  // number of cells per CUDA block
+  static constexpr int cells_per_block = 16;
+#endif
+};
+
+template <>
+struct elasticity_traits<4>
+{
+  // number of scalar dofs per cell
+  static constexpr int ndofs = 35;
+
+  // quadrature degree for P4 tetrahedra
+  static constexpr int quadrature_degree = 6;
+
+  // number of quadrature points per cell
+  static constexpr int nq = 24;
+
+#if defined(__HIP_PLATFORM_AMD__)
+  static constexpr int cells_per_block = 4;
+#else
+  // number of cells per CUDA block
+  static constexpr int cells_per_block = 8;
+#endif
+};
+
+template <>
+struct elasticity_traits<5>
+{
+  // number of scalar dofs per cell
+  static constexpr int ndofs = 56;
+
+  // quadrature degree for P5 tetrahedra
+  static constexpr int quadrature_degree = 12;
+
+  // number of quadrature points per cell
+  static constexpr int nq = 122;
+
+#if defined(__HIP_PLATFORM_AMD__)
+  static constexpr int cells_per_block = 2;
+#else
+  // number of cells per CUDA block
+  static constexpr int cells_per_block = 4;
+#endif
+};
+
+template <typename T>
+__global__ void set_identity_rows(T* output, const T* input,
+                                  const std::int8_t* bc_marker,
+                                  std::size_t size)
+{
+  const std::size_t i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i < size and bc_marker[i])
+  {
+    // set the value to the input if it is clamped
+    output[i] = input[i];
   }
+}
 } // namespace detail
-
 
 /// @brief Assemble 3D elasticity action vector
 /// @param phi_data Basis evaluation data at reference quadrature points
@@ -349,18 +416,15 @@ __global__ void elasticity_diagonal(
 /// @param cell_dofs DofMap
 /// @param cells List of cells to integrate over
 
-template <int P, typename T, typename ContainerT, typename ScatterContainer, typename ContainerI, typename ContainerB>
+template <int P, typename T, typename ContainerT, typename ScatterContainer,
+          typename ContainerI, typename ContainerB>
 
-void assemble_elasticity_action(dolfinx::la::Vector<T, ContainerT, ScatterContainer>& b,
-                                const dolfinx::la::Vector<T, ContainerT, ScatterContainer>& u,
-                                const ContainerT& phi_data, 
-                                const ContainerT& K,
-                                const ContainerT& wdetJ,
-                                const ContainerI& cell_dofs,
-                                const ContainerI& cells,
-                                const ContainerB& bc_marker,
-                                const T lambda, 
-                                const T mu)
+void assemble_elasticity_action(
+    dolfinx::la::Vector<T, ContainerT, ScatterContainer>& b,
+    const dolfinx::la::Vector<T, ContainerT, ScatterContainer>& u,
+    const ContainerT& phi_data, const ContainerT& K, const ContainerT& wdetJ,
+    const ContainerI& cell_dofs, const ContainerI& cells,
+    const ContainerB& bc_marker, const T lambda, const T mu)
 {
   constexpr int ndofs = detail::elasticity_traits<P>::ndofs;
   constexpr int nq = detail::elasticity_traits<P>::nq;
@@ -369,24 +433,21 @@ void assemble_elasticity_action(dolfinx::la::Vector<T, ContainerT, ScatterContai
   dim3 block_size(cells_per_block, 3, ndofs);
   dim3 grid_size((cells.size() + cells_per_block - 1) / cells_per_block);
 
-  detail::elasticity_action<T, nq, ndofs, cells_per_block><<<grid_size, block_size>>>(
-      b.array().data().get(), u.array().data().get(), phi_data.data().get(),
-      K.data().get(), wdetJ.data().get(), cell_dofs.data().get(),
-      cells.data().get(), cells.size(), bc_marker.data().get(), lambda, mu);
+  detail::elasticity_action<T, nq, ndofs, cells_per_block>
+      <<<grid_size, block_size>>>(
+          b.array().data().get(), u.array().data().get(), phi_data.data().get(),
+          K.data().get(), wdetJ.data().get(), cell_dofs.data().get(),
+          cells.data().get(), cells.size(), bc_marker.data().get(), lambda, mu);
 }
 
+template <int P, typename T, typename ContainerT, typename ScatterContainer,
+          typename ContainerI, typename ContainerB>
 
-template <int P, typename T, typename ContainerT, typename ScatterContainer, typename ContainerI, typename ContainerB>
-
-void assemble_elasticity_diagonal(dolfinx::la::Vector<T, ContainerT, ScatterContainer>& diagonal,
-                                  const ContainerT& phi_data, 
-                                  const ContainerT& K,
-                                  const ContainerT& wdetJ,
-                                  const ContainerI& cell_dofs,
-                                  const ContainerI& cells,
-                                  const ContainerB& bc_marker,
-                                  const T lambda, 
-                                  const T mu)
+void assemble_elasticity_diagonal(
+    dolfinx::la::Vector<T, ContainerT, ScatterContainer>& diagonal,
+    const ContainerT& phi_data, const ContainerT& K, const ContainerT& wdetJ,
+    const ContainerI& cell_dofs, const ContainerI& cells,
+    const ContainerB& bc_marker, const T lambda, const T mu)
 {
   constexpr int ndofs = detail::elasticity_traits<P>::ndofs;
   constexpr int nq = detail::elasticity_traits<P>::nq;
@@ -395,8 +456,9 @@ void assemble_elasticity_diagonal(dolfinx::la::Vector<T, ContainerT, ScatterCont
   dim3 block_size(cells_per_block, 3, ndofs);
   dim3 grid_size((cells.size() + cells_per_block - 1) / cells_per_block);
 
-  detail::elasticity_diagonal<T, nq, ndofs, cells_per_block><<<grid_size, block_size>>>(
-      diagonal.array().data().get(), phi_data.data().get(),
-      K.data().get(), wdetJ.data().get(), cell_dofs.data().get(),
-      cells.data().get(), cells.size(), bc_marker.data().get(), lambda, mu);
+  detail::elasticity_diagonal<T, nq, ndofs, cells_per_block>
+      <<<grid_size, block_size>>>(
+          diagonal.array().data().get(), phi_data.data().get(), K.data().get(),
+          wdetJ.data().get(), cell_dofs.data().get(), cells.data().get(),
+          cells.size(), bc_marker.data().get(), lambda, mu);
 }

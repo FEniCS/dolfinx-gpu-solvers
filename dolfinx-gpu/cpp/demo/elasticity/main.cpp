@@ -1,8 +1,8 @@
-// Copyright (C) 2026 Chris Richardson
+// Copyright (C) 2026 Chris Richardson, Arwa Fathy
 //
 // This file is part of DOLFINx (https://www.fenicsproject.org)
 //
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier:    MIT
 //
 
 #include <array>
@@ -16,21 +16,21 @@
 
 #include <boost/program_options.hpp>
 #include <dolfinx.h>
+#include <dolfinx/io/ADIOS2Writers.h>
+#include <dolfinx/io/XDMFFile.h>
 #include <dolfinx/la/Vector.h>
 #include <petscsys.h>
-#include <dolfinx/io/XDMFFile.h>
-#include <dolfinx/io/ADIOS2Writers.h>
 
 #include <thrust/copy.h>
 #include <thrust/device_vector.h>
 #include <thrust/execution_policy.h>
 #include <thrust/fill.h>
 
+#include "cg.h"
 #include "jacobi.h"
+#include "load.h"
 #include "p_multigrid.h"
 #include "util.h"
-#include "load.h"
-#include "cg.h"
 
 using namespace dolfinx;
 namespace po = boost::program_options;
@@ -39,10 +39,16 @@ namespace po = boost::program_options;
 using Hierarchy = PMultigridHierarchy<2, 1>;
 
 // p-multigrid smoothing configuration
-struct SmoothingConfig{int order; int pre; int post;};
+struct SmoothingConfig
+{
+  int order;
+  int pre;
+  int post;
+};
 
 constexpr std::array smoothing_config = {
-    SmoothingConfig{2, 3, 3}, // 3 pre-smoothing and 3 post-smoothing steps for P2
+    SmoothingConfig{2, 3,
+                    3}, // 3 pre-smoothing and 3 post-smoothing steps for P2
 };
 
 int main(int argc, char* argv[])
@@ -74,7 +80,7 @@ int main(int argc, char* argv[])
     auto mesh = std::make_shared<mesh::Mesh<U>>(mesh::create_box<U>(
         MPI_COMM_WORLD, {{{0.0, 0.0, 0.0}, {1.0, 1.0, 1.0}}}, {n, n, n},
         mesh::CellType::tetrahedron, part));
-     
+
     // io::XDMFFile xdmf_file(MPI_COMM_WORLD, "", "r");
     // auto mesh = std::make_shared<mesh::Mesh<U>>(xdmf_file.read_mesh(
     //   fem::CoordinateElement<U>(mesh::CellType::tetrahedron, 1),
@@ -86,10 +92,10 @@ int main(int argc, char* argv[])
         mesh->topology()->index_map(mesh->topology()->dim())->size_local());
     std::iota(cell_list_host.begin(), cell_list_host.end(), 0);
     thrust::device_vector<std::int32_t> cell_list(cell_list_host.begin(),
-                                                   cell_list_host.end());
+                                                  cell_list_host.end());
 
     const int tdim = mesh->topology()->dim();
-    const int fdim = tdim - 1;                                         
+    const int fdim = tdim - 1;
 
     auto boundary_facets = mesh::locate_entities_boundary(
       *mesh,
@@ -116,19 +122,21 @@ int main(int argc, char* argv[])
     setup_timings.reset();
     device_synchronize();
 
-    const auto setup_start =std::chrono::high_resolution_clock::now();
+    const auto setup_start = std::chrono::high_resolution_clock::now();
 
     Hierarchy hierarchy(mesh, cell_list, boundary_facets, lambda, mu);
-    
+
     device_synchronize();
 
     const auto setup_end = std::chrono::high_resolution_clock::now();
 
-    const double hierarchy_setup_time = std::chrono::duration<double>(setup_end - setup_start).count();
+    const double hierarchy_setup_time
+        = std::chrono::duration<double>(setup_end - setup_start).count();
 
     if (rank == 0)
     {
-        std::cout << "Hierarchy setup time: " << hierarchy_setup_time << " seconds\n";
+      std::cout << "Hierarchy setup time: " << hierarchy_setup_time
+                << " seconds\n";
     }
 
     setup_timings.print(hierarchy_setup_time);
@@ -137,7 +145,7 @@ int main(int argc, char* argv[])
 
     for (const auto& config : smoothing_config)
     {
-        hierarchy.set_smoothing_steps(config.order, config.pre, config.post);
+      hierarchy.set_smoothing_steps(config.order, config.pre, config.post);
     }
 
     auto& fine_level = hierarchy.level;
@@ -146,49 +154,62 @@ int main(int argc, char* argv[])
     const int bs = fine_level.V->dofmap()->index_map_bs();
 
     DeviceVector b_device(fine_level.V->dofmap()->index_map, 3);
-    fine_level.assemble_body_force(b_device, detail::ConstantBodyForce<T>{T(0), T(0), T(-1)}); // assemble body force vector with force in negative z direction
+
+    // assemble body force vector with force in negative z direction
+    fine_level.assemble_body_force(
+        b_device, detail::ConstantBodyForce<T>{T(0), T(0), T(-1)});
 
     // 0 initial guess
     DeviceVector x_device(fine_level.V->dofmap()->index_map, 3);
-    thrust::fill(thrust::device, x_device.array().begin(), x_device.array().end(), T(0));
+    thrust::fill(thrust::device, x_device.array().begin(),
+                 x_device.array().end(), T(0));
 
     DeviceVector fine_Ax(fine_level.V->dofmap()->index_map, 3);
     DeviceVector fine_residual(fine_level.V->dofmap()->index_map, 3);
 
     // outer cg solver
-    elasticity::CGSolver<DeviceVector> cg_solver(fine_level.V->dofmap()->index_map, 3);
+    elasticity::CGSolver<DeviceVector> cg_solver(
+        fine_level.V->dofmap()->index_map, 3);
+
     cg_solver.set_max_iterations(5000);
     cg_solver.set_tolerance(T(1e-8));
 
-    auto pmg_preconditioner = [&hierarchy](DeviceVector& z, const DeviceVector& r)
+    auto pmg_preconditioner
+        = [&hierarchy](DeviceVector& z, const DeviceVector& r)
     {
       thrust::fill(thrust::device, z.array().begin(), z.array().end(), T(0));
       hierarchy.v_cycle(z, r);
     };
 
-
     // timing
     T initial_residual_norm = T(0);
     T final_residual_norm = T(0);
 
-    thrust::fill(thrust::device, x_device.array().begin(), x_device.array().end(), T(0));
-      
-    initial_residual_norm = residual_norm(fine_level, x_device, b_device, fine_Ax, fine_residual);
+    thrust::fill(thrust::device, x_device.array().begin(),
+                 x_device.array().end(), T(0));
+
+    initial_residual_norm
+        = residual_norm(fine_level, x_device, b_device, fine_Ax, fine_residual);
 
     solve_timings.reset();
 
     const auto start_time = std::chrono::high_resolution_clock::now();
     device_synchronize();
 
-    const int cg_iterations = cg_solver.solve(fine_level, x_device, b_device, pmg_preconditioner);
-    
+    const int cg_iterations
+        = cg_solver.solve(fine_level, x_device, b_device, pmg_preconditioner);
+
     device_synchronize();
     const auto end_time = std::chrono::high_resolution_clock::now();
 
-    const double solve_time = std::chrono::duration<double>(end_time - start_time).count();
+    const double solve_time
+        = std::chrono::duration<double>(end_time - start_time).count();
 
-    final_residual_norm = residual_norm(fine_level, x_device, b_device, fine_Ax, fine_residual);
-    const T relative_residual_norm = final_residual_norm / initial_residual_norm;
+    final_residual_norm
+        = residual_norm(fine_level, x_device, b_device, fine_Ax, fine_residual);
+
+    const T relative_residual_norm
+        = final_residual_norm / initial_residual_norm;
 
     if (rank == 0)
     {
@@ -201,16 +222,15 @@ int main(int argc, char* argv[])
 
     auto x2 = std::make_shared<fem::Function<T>>(fine_level.V);
 
-    thrust::copy(x_device.array().begin(), x_device.array().end(), x2->x()->array().begin());
+    thrust::copy(x_device.array().begin(), x_device.array().end(),
+                 x2->x()->array().begin());
 
-    ///// for visualisation in PARAVIEW /////
-    #ifdef HAS_ADIOS2
-      x2->name = "displacement";
-      io::VTXWriter<U> writer(
-          MPI_COMM_WORLD, "elasticity.bp", {x2}, "bp4");
-      writer.write(0.0);
-    #endif
-
+///// for visualisation in PARAVIEW /////
+#ifdef HAS_ADIOS2
+    x2->name = "displacement";
+    io::VTXWriter<U> writer(MPI_COMM_WORLD, "elasticity.bp", {x2}, "bp4");
+    writer.write(0.0);
+#endif
   }
 
   PetscFinalize();

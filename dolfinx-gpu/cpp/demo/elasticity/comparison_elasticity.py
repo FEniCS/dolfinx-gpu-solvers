@@ -1,3 +1,10 @@
+# Copyright (C) 2026 Arwa Fathy
+#
+# This file is part of DOLFINx (https://www.fenicsproject.org)
+#
+# SPDX-License-Identifier: MIT
+#
+
 from mpi4py import MPI
 import numpy as np
 import ufl

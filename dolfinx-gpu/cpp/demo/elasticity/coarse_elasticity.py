@@ -1,5 +1,9 @@
-### this file is to help assemble the sparse matrix for the AMG solve
-
+# Copyright (C) 2026 Arwa Fathy
+#
+# This file is part of DOLFINx (https://www.fenicsproject.org)
+#
+# SPDX-License-Identifier: MIT
+#
 
 import basix
 import basix.ufl
