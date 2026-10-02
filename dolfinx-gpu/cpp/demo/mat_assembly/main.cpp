@@ -33,9 +33,9 @@ int main(int argc, char* argv[])
 
   {
     // Create mesh and function space
-    auto part = mesh::create_cell_partitioner(mesh::GhostMode::shared_facet);
+    auto part = mesh::create_cell_partitioner(mesh::GhostMode::shared_facet, 2);
     auto mesh = std::make_shared<mesh::Mesh<U>>(mesh::create_box<U>(
-        MPI_COMM_WORLD, {{{0.0, 0.0, 0.0}, {1.0, 1.0, 1.0}}}, {10, 10, 10},
+        MPI_COMM_WORLD, {{{0.0, 0.0, 0.0}, {1.0, 1.0, 1.0}}}, {50, 50, 50},
         mesh::CellType::tetrahedron, part));
 
     int degree = 1;
@@ -91,8 +91,10 @@ int main(int argc, char* argv[])
     thrust::device_vector<T> phi_data(table.begin(), table.end());
 
     // Assemble Laplacian on-device
-    assemble(A, phi_data, G6_data, gpu_dofmap.map(), cells, nq, ndofs);
-
+    {
+      common::Timer ta("Assembly on device");
+      assemble(A, phi_data, G6_data, gpu_dofmap.map(), cells, nq, ndofs);
+    }
     T norm = thrust::inner_product(A.values().begin(), A.values().end(),
                                    A.values().begin(), 0.0);
 

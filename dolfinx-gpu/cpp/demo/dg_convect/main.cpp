@@ -67,7 +67,7 @@ int main(int argc, char* argv[])
     // -----------------------------------------------------------------------
     // Mesh: box of tets, shared-facet ghost mode (needed for dS)
     // -----------------------------------------------------------------------
-    auto part = mesh::create_cell_partitioner(mesh::GhostMode::shared_facet);
+    auto part = mesh::create_cell_partitioner(mesh::GhostMode::shared_facet, 2);
     auto msh = std::make_shared<mesh::Mesh<U>>(mesh::create_box<U>(
         MPI_COMM_WORLD, {{{0.0, 0.0, 0.0}, {1.0, 1.0, 0.1}}}, {n, n, n / 10},
         mesh::CellType::tetrahedron, part));
