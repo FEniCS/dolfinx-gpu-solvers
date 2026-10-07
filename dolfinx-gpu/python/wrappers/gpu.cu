@@ -140,6 +140,12 @@ NB_MODULE(gpucpp, m)
   m.attr("backend") = "hip";
 #endif
 
+#ifdef HAS_GINKGO
+  m.attr("has_ginkgo") = true;
+#else
+  m.attr("has_ginkgo") = false;
+#endif
+
 #ifdef NDEBUG
   nanobind::set_leak_warnings(false);
 #endif
