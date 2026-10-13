@@ -86,7 +86,7 @@ add_executable(${PROJECT_NAME} main.cpp poisson.c)
 # endif()
 
 target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_20)
-target_link_libraries(${PROJECT_NAME} dolfinx Basix::basix Ginkgo::ginkgo Boost::program_options)
+target_link_libraries(${PROJECT_NAME} dolfinx::dolfinx Basix::basix Ginkgo::ginkgo Boost::program_options)
 
 if(amd)
   target_link_libraries(${PROJECT_NAME} roc::rocthrust)
