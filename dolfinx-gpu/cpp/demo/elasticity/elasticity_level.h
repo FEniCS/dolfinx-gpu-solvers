@@ -129,7 +129,7 @@ public:
         V(std::make_shared<dolfinx::fem::FunctionSpace<U>>(
             dolfinx::fem::create_functionspace<U>(
                 mesh_ptr, std::make_shared<dolfinx::fem::FiniteElement<U>>(
-                              elem, std::vector<std::size_t>{3})))),
+                              elem, 3, std::vector<std::size_t>{3})))),
         gpu_dofmap(*(V->dofmap())),
         geometry(mesh_ptr->geometry(), quadrature_degree)
   {

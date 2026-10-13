@@ -67,17 +67,17 @@ int main(int argc, char* argv[])
     // -----------------------------------------------------------------------
     // Mesh: box of tets, shared-facet ghost mode (needed for dS)
     // -----------------------------------------------------------------------
-    auto part = mesh::create_cell_partitioner(mesh::GhostMode::shared_facet, 2);
     auto msh = std::make_shared<mesh::Mesh<U>>(mesh::create_box<U>(
         MPI_COMM_WORLD, {{{0.0, 0.0, 0.0}, {1.0, 1.0, 0.1}}}, {n, n, n / 10},
-        mesh::CellType::tetrahedron, part));
+        mesh::CellType::tetrahedron, graph::partition_graph,
+        mesh::GhostMode::shared_facet));
 
     // Ensure facet entities and facet↔cell connectivity exist
     int tdim = msh->topology()->dim();
     msh->topology_mutable()->create_entities(tdim - 1);
     msh->topology_mutable()->create_connectivity(tdim - 1, tdim);
     msh->topology_mutable()->create_connectivity(tdim, tdim - 1);
-    msh->topology_mutable()->create_entity_permutations();
+    msh->topology_mutable()->create_entity_permutations(tdim - 1);
     auto [normals, detJ, Kadj] = compute_facet_normals(*msh);
 
     int nfacets = msh->topology()->index_map(tdim - 1)->size_local();
@@ -89,7 +89,7 @@ int main(int argc, char* argv[])
     auto f_to_c = msh->topology()->connectivity(tdim - 1, tdim);
     auto c_to_f = msh->topology()->connectivity(tdim, tdim - 1);
     const std::vector<std::uint8_t>& fperm
-        = msh->topology()->get_facet_permutations();
+        = msh->topology()->get_entity_permutations(tdim - 1);
     for (int i = 0; i < f_to_c->num_nodes(); ++i)
     {
       auto cells = f_to_c->links(i);
@@ -209,13 +209,13 @@ int main(int argc, char* argv[])
     auto V
         = std::make_shared<fem::FunctionSpace<U>>(fem::create_functionspace<U>(
             msh, std::make_shared<fem::FiniteElement<U>>(
-                     elem_dg1, std::vector<std::size_t>{nc})));
+                     elem_dg1, 3, std::vector<std::size_t>{nc})));
 
     // Vector DG1: same scalar element, value_shape = {3} (3 spatial components)
     auto W
         = std::make_shared<fem::FunctionSpace<U>>(fem::create_functionspace<U>(
             msh, std::make_shared<fem::FiniteElement<U>>(
-                     elem_dg1, std::vector<std::size_t>{3})));
+                     elem_dg1, 3, std::vector<std::size_t>{3})));
 
     // -----------------------------------------------------------------------
     // Functions

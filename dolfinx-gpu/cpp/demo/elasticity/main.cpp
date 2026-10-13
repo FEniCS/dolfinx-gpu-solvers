@@ -75,11 +75,9 @@ int main(int argc, char* argv[])
   {
     std::int32_t n = vm["n"].as<std::size_t>();
     // std::cout << "n=" << n << "\n";
-    auto part
-        = mesh::create_cell_partitioner(dolfinx::mesh::GhostMode::none, 2);
     auto mesh = std::make_shared<mesh::Mesh<U>>(mesh::create_box<U>(
         MPI_COMM_WORLD, {{{0.0, 0.0, 0.0}, {1.0, 1.0, 1.0}}}, {n, n, n},
-        mesh::CellType::tetrahedron, part));
+        mesh::CellType::tetrahedron));
 
     // io::XDMFFile xdmf_file(MPI_COMM_WORLD, "", "r");
     // auto mesh = std::make_shared<mesh::Mesh<U>>(xdmf_file.read_mesh(
@@ -98,21 +96,24 @@ int main(int argc, char* argv[])
     const int fdim = tdim - 1;
 
     auto boundary_facets = mesh::locate_entities_boundary(
-      *mesh,
-      fdim,
-      [](auto x){ // x is a table of coordinates
-      std::vector<std::int8_t> marker(x.extent(1), false); // create a list called marker which has one entry for each point being checked
-            
-      constexpr T xmin = T(0);
-      constexpr T tol = T(1e-8);
+        *mesh, fdim,
+        [](auto x) { // x is a table of coordinates
+          std::vector<std::int8_t> marker(
+              x.extent(1), false); // create a list called marker which has one
+                                   // entry for each point being checked
 
-      // mark points on the left boundary (x=0) as true
-      for (std::size_t p = 0; p < x.extent(1); ++p) // loop over all points
-      {
-        marker[p] = std::abs(x(0, p) - xmin) < tol; // mark points on the left boundary (x=xmin) as true
-      }
-      return marker;
-    });
+          constexpr T xmin = T(0);
+          constexpr T tol = T(1e-8);
+
+          // mark points on the left boundary (x=0) as true
+          for (std::size_t p = 0; p < x.extent(1); ++p) // loop over all points
+          {
+            marker[p]
+                = std::abs(x(0, p) - xmin)
+                  < tol; // mark points on the left boundary (x=xmin) as true
+          }
+          return marker;
+        });
 
     constexpr T E = T(1.0e9);
     constexpr T nu = T(0.3);
