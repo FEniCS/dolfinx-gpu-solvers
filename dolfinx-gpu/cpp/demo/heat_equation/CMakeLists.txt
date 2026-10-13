@@ -37,7 +37,7 @@ find_package(cudss 0.7.0 REQUIRED)
 find_package(CUDAToolkit)
 
 add_executable(${PROJECT_NAME} main.cpp ${CMAKE_CURRENT_BINARY_DIR}/heat.c)
-target_link_libraries(${PROJECT_NAME} dolfinx cudss ${CUDA_cusparse_LIBRARY})
+target_link_libraries(${PROJECT_NAME} dolfinx::dolfinx cudss ${CUDA_cusparse_LIBRARY})
 
 # Set C++20 standard
 set(CMAKE_CXX_EXTENSIONS OFF)

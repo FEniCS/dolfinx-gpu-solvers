@@ -9,7 +9,7 @@ std::tuple<thrust::device_vector<T>, thrust::device_vector<T>,
            thrust::device_vector<T>>
 compute_facet_normals(dolfinx::mesh::Mesh<T>& mesh)
 {
-  auto element = mesh.geometry().cmap();
+  auto element = mesh.geometry().cmaps().front();
 
   // Only need one point, as P1 geometry constant over cell
   constexpr int nq = 1;
@@ -64,7 +64,7 @@ compute_facet_normals(dolfinx::mesh::Mesh<T>& mesh)
   std::vector<T> detJ(num_cells);
   std::vector<T> Kadj(num_cells * 9);
   auto xgeom = mesh.geometry().x();
-  auto dofmap = mesh.geometry().dofmap();
+  auto dofmap = mesh.geometry().dofmaps().front();
 
   // Cross product
   using Vec3 = std::array<T, 3>;

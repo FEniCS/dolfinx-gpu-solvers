@@ -68,7 +68,7 @@ add_executable(${PROJECT_NAME}
 
 target_compile_definitions(${PROJECT_NAME} PUBLIC SCALAR_${SCALAR_TYPE})
 
-target_link_libraries(${PROJECT_NAME} dolfinx ${GPUBLAS})
+target_link_libraries(${PROJECT_NAME} dolfinx::dolfinx ${GPUBLAS})
 
 set(CMAKE_CXX_EXTENSIONS OFF)
 target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_20)

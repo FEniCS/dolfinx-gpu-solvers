@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include "elasticity.h"
 #include <array>
 #include <cstddef>
 #include <cstdint>
