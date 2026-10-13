@@ -26,10 +26,9 @@ int main(int argc, char* argv[])
 
   {
     // Create mesh and function space
-    auto part = mesh::create_cell_partitioner(mesh::GhostMode::shared_facet, 2);
-    auto mesh = std::make_shared<mesh::Mesh<U>>(
-        mesh::create_rectangle<U>(MPI_COMM_WORLD, {{{0.0, 0.0}, {2.0, 1.0}}},
-                                  {3200, 320}, mesh::CellType::triangle, part));
+    auto mesh = std::make_shared<mesh::Mesh<U>>(mesh::create_rectangle<U>(
+        MPI_COMM_WORLD, {{{0.0, 0.0}, {2.0, 1.0}}}, {3200, 320},
+        mesh::CellType::triangle, graph::partition_graph));
 
     auto element = basix::create_element<U>(
         basix::element::family::P, basix::cell::type::triangle, 1,
@@ -38,7 +37,7 @@ int main(int argc, char* argv[])
 
     auto V
         = std::make_shared<fem::FunctionSpace<U>>(fem::create_functionspace<U>(
-            mesh, std::make_shared<fem::FiniteElement<U>>(element)));
+            mesh, std::make_shared<fem::FiniteElement<U>>(element, 2)));
     // Prepare and set Constants for the bilinear form
     auto kappa = std::make_shared<fem::Constant<T>>(2.0);
     auto f = std::make_shared<fem::Function<T>>(V);

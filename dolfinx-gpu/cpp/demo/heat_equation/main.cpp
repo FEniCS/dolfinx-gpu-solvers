@@ -46,10 +46,10 @@ int main(int argc, char* argv[])
 
   {
     // Create mesh and function space
-    auto part = mesh::create_cell_partitioner(mesh::GhostMode::shared_facet, 2);
     auto mesh = std::make_shared<mesh::Mesh<U>>(mesh::create_box<U>(
         MPI_COMM_WORLD, {{{0.0, 0.0, 0.0}, {1.0, 1.0, 1.0}}}, {100, 100, 100},
-        mesh::CellType::tetrahedron, part));
+        mesh::CellType::tetrahedron, graph::partition_graph,
+        mesh::GhostMode::shared_facet));
 
     auto element = basix::create_element<U>(
         basix::element::family::P, basix::cell::type::tetrahedron, 1,
@@ -58,7 +58,7 @@ int main(int argc, char* argv[])
 
     auto V
         = std::make_shared<fem::FunctionSpace<U>>(fem::create_functionspace<U>(
-            mesh, std::make_shared<fem::FiniteElement<U>>(element)));
+            mesh, std::make_shared<fem::FiniteElement<U>>(element, 3)));
 
     //  Next, we define the variational formulation by initializing the
     //  bilinear and linear forms ($a$, $L$) using the previously

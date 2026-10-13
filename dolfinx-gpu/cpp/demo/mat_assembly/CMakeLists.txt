@@ -31,7 +31,7 @@ else()
 endif()
 
 add_executable(${PROJECT_NAME} main.cpp sparsity.cpp)
-target_link_libraries(${PROJECT_NAME} dolfinx)
+target_link_libraries(${PROJECT_NAME} dolfinx::dolfinx)
 
 # Set C++20 standard
 set(CMAKE_CXX_EXTENSIONS OFF)

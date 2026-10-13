@@ -39,7 +39,7 @@ endif()
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
 add_executable(${PROJECT_NAME} main.cpp ${CMAKE_CURRENT_BINARY_DIR}/poisson.c)
-target_link_libraries(${PROJECT_NAME} dolfinx)
+target_link_libraries(${PROJECT_NAME} dolfinx::dolfinx)
 
 # Set C++20 standard
 set(CMAKE_CXX_EXTENSIONS OFF)
