@@ -33,10 +33,10 @@ int main(int argc, char* argv[])
 
   {
     // Create mesh and function space
-    auto part = mesh::create_cell_partitioner(mesh::GhostMode::shared_facet, 2);
     auto mesh = std::make_shared<mesh::Mesh<U>>(mesh::create_box<U>(
         MPI_COMM_WORLD, {{{0.0, 0.0, 0.0}, {1.0, 1.0, 1.0}}}, {50, 50, 50},
-        mesh::CellType::tetrahedron, part));
+        mesh::CellType::tetrahedron, graph::partition_graph,
+        mesh::GhostMode::shared_facet));
 
     int degree = 1;
     auto element = basix::create_element<U>(
@@ -46,7 +46,7 @@ int main(int argc, char* argv[])
 
     auto V
         = std::make_shared<fem::FunctionSpace<U>>(fem::create_functionspace<U>(
-            mesh, std::make_shared<fem::FiniteElement<U>>(element)));
+            mesh, std::make_shared<fem::FiniteElement<U>>(element, 3)));
 
     // Create matrix data structure
     GPUDofMap<thrust::device_vector<std::int32_t>> gpu_dofmap(*(V->dofmap()));

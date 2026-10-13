@@ -15,9 +15,9 @@ import numpy as np
 
 dtype = np.float32
 
-nx = 40
-ny = 40
-nz = 40
+nx = 100
+ny = 100
+nz = 100
 Bmesh = dolfinx.common.Timer(f"Create mesh {nx}x{ny}x{nz}")
 mesh = dolfinx.mesh.create_box(
     comm=MPI.COMM_WORLD,
@@ -58,11 +58,11 @@ L = form(L, dtype=dtype)
 B0 = dolfinx.common.Timer("Assemble on CPU")
 A = assemble_matrix(a, [bc])
 b = assemble_vector(L)
-u = Function(V, dtype=dtype)
-u1 = GPUVector(u.x)
 del(B0)
 
-B1 = dolfinx.common.Timer("Copy A/b to device")
+u = Function(V, dtype=dtype)
+B1 = dolfinx.common.Timer("Copy A/b/u to device")
+u1 = GPUVector(u.x)
 A1 = GPUMatrixCSR(A)
 b1 = GPUVector(b)
 del(B1)
@@ -77,18 +77,19 @@ del(B2)
 spmv = GPUSPMV(A1, u1, b1)
 spmv.apply()
 
-GT1 = dolfinx.common.Timer("Setup using Ginkgo")
-Ginkgo_Solver = gpucpp.Ginkgo_Solver_float32(A1._cpp_object, u1._cpp_object, b1._cpp_object, False)
-del(GT1)
-GT2 = dolfinx.common.Timer("Solve using Ginkgo")
-Ginkgo_Solver.solve()
-del(GT2)
+if gpucpp.has_ginkgo:
+    GT1 = dolfinx.common.Timer("Setup using Ginkgo")
+    Ginkgo_Solver = gpucpp.Ginkgo_Solver_float32(A1._cpp_object, u1._cpp_object, b1._cpp_object, False)
+    del(GT1)
+    GT2 = dolfinx.common.Timer("Solve using Ginkgo")
+    Ginkgo_Solver.solve()
+    del(GT2)
 
 
 if gpucpp.backend == 'cuda':
-    B3 = dolfinx.common.Timer("Solve using cupyx.scpiy.sparse.linalg.spsolve")
-    u = spsolve(Ac, b1.array)
-    del(B3)
+#    B3 = dolfinx.common.Timer("Solve using cupyx.scpiy.sparse.linalg.spsolve")
+#    u = spsolve(Ac, b1.array)
+#    del(B3)
     B4 = dolfinx.common.Timer("CUDSS: Setup")
     solver = GPUSolver(A1, b1, u1)
     solver.analyze()
